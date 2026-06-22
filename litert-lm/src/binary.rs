@@ -4,7 +4,7 @@ use std::fs;
 use std::path::PathBuf;
 use tokio::io::AsyncWriteExt;
 
-const VERSION: &str = "v0.13.1";
+const VERSION: &str = "v0.7.0";
 const BASE_URL: &str = "https://github.com/google-ai-edge/LiteRT-LM/releases/download";
 
 #[derive(Debug, Clone)]
