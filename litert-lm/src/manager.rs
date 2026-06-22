@@ -198,6 +198,15 @@ impl LitManager {
         };
 
         println!("[디버그] 모델명 리졸브: {} -> {}", model, model_file);
+        if std::path::Path::new(&model_file).exists() {
+            if let Ok(metadata) = std::fs::metadata(&model_file) {
+                println!("[디버그] 로컬 모델 파일 존재함. 크기: {} bytes ({} MB)", metadata.len(), metadata.len() / 1024 / 1024);
+            } else {
+                println!("[디버그] 로컬 모델 파일 존재하나 메타데이터 읽기 실패");
+            }
+        } else {
+            println!("[디버그] 로컬 모델 파일이 존재하지 않아 레지스트리/캐시 ID로 사용됨");
+        }
 
         // Standardize the prompt to single-line by replacing newlines with spaces
         let single_line_prompt = prompt.replace('\r', "").replace('\n', " ");
