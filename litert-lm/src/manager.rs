@@ -167,53 +167,17 @@ impl LitManager {
         tracing::debug!(model = %model, prompt_length = prompt.len(), "Running single-shot GPU completion stream");
 
         let binary_path = self.ensure_binary().await?;
-        let path = std::path::Path::new(model);
-        let model_file = if path.exists() {
-            if path.is_file() {
-                if let Ok(abs) = std::fs::canonicalize(path) {
-                    abs.to_string_lossy().to_string()
-                } else {
-                    model.to_string()
-                }
-            } else {
-                println!("[경고] 모델 경로 {:?}가 존재하지만 일반 파일이 아닙니다.", model);
-                model.to_string()
-            }
-        } else {
-            let with_ext = format!("{}.litertlm", model);
-            let ext_path = std::path::Path::new(&with_ext);
-            if ext_path.exists() && ext_path.is_file() {
-                if let Ok(abs) = std::fs::canonicalize(ext_path) {
-                    abs.to_string_lossy().to_string()
-                } else {
-                    with_ext
-                }
-            } else {
-                if model.ends_with(".litertlm") {
-                    model.strip_suffix(".litertlm").unwrap().to_string()
-                } else {
-                    model.to_string()
-                }
-            }
-        };
-
-        println!("[디버그] 모델명 리졸브: {} -> {}", model, model_file);
-        if std::path::Path::new(&model_file).exists() {
-            if let Ok(metadata) = std::fs::metadata(&model_file) {
-                println!("[디버그] 로컬 모델 파일 존재함. 크기: {} bytes ({} MB)", metadata.len(), metadata.len() / 1024 / 1024);
-            } else {
-                println!("[디버그] 로컬 모델 파일 존재하나 메타데이터 읽기 실패");
-            }
-        } else {
-            println!("[디버그] 로컬 모델 파일이 존재하지 않아 레지스트리/캐시 ID로 사용됨");
-        }
+        // lit CLI only accepts registry/cache model IDs (e.g. "gemma-4-E2B-it"),
+        // NOT file paths. Always strip .litertlm extension to get the bare ID.
+        let model_id = model.strip_suffix(".litertlm").unwrap_or(model);
+        println!("[디버그] 모델 레지스트리 ID: {} (원본: {})", model_id, model);
 
         // Standardize the prompt to single-line by replacing newlines with spaces
         let single_line_prompt = prompt.replace('\r', "").replace('\n', " ");
 
         let mut child = tokio::process::Command::new(&binary_path)
             .arg("run")
-            .arg(&model_file)
+            .arg(&model_id)
             .arg("--backend")
             .arg("gpu")
             .stdin(Stdio::piped())
