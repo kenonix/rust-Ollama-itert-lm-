@@ -1,0 +1,31 @@
+# Rust binary/build target
+target/
+/target
+
+# LiteRT Models and cache files (large files)
+*.litertlm
+*.litertlm.xnnpack_cache
+*.litertlm.xnnpack_cache_*
+*.litertlm.static_audio_encoder.xnnpack_cache_*
+*.litertlm.audio_adapter.xnnpack_cache_*
+*.litertlm.vision_adapter.xnnpack_cache_*
+*.litertlm.vision_encoder.xnnpack_cache*
+*.litertlm_*_mldrift_program_cache.bin
+*.litertlm_*_mldrift_weight_cache.bin
+*mldrift_program_cache.bin
+*.profraw
+
+# Temporary and output logs
+output.txt
+prompt.txt
+default.profraw
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+dynamic_tools/*_args.json
+
+# OS files
+.DS_Store
+Thumbs.db

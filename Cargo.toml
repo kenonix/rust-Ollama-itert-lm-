@@ -1,0 +1,20 @@
+[package]
+name = "litert-lm-server"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1.38", features = ["full"] }
+axum = { version = "0.7", features = ["macros"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", features = ["preserve_order"] }
+tower = { version = "0.4" }
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+litert-lm = { path = "./litert-lm" }
+anyhow = "1.0"
+futures-util = "0.3"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+async-stream = "0.3"
+chrono = { version = "0.4", features = ["serde"] }
+reqwest = { version = "0.12", features = ["json"] }

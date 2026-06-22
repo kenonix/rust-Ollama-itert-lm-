@@ -1,0 +1,484 @@
+use anyhow::{Context, Result};
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::process::{Command, Stdio};
+use std::sync::Arc;
+use tokio::sync::{Mutex, RwLock};
+use tokio_stream::Stream;
+
+use crate::binary::BinaryManager;
+use crate::process::ProcessPool;
+use crate::server::{create_router, AppState};
+
+#[derive(Debug, Clone)]
+pub struct LitManager {
+    binary_manager: BinaryManager,
+    binary_path: Arc<RwLock<Option<PathBuf>>>,
+    // Map of pools, keyed by model name
+    process_pools: Arc<Mutex<HashMap<String, Arc<ProcessPool>>>>,
+    // Make pool size configurable
+    pool_size: usize,
+    http_client: reqwest::Client,
+}
+
+impl LitManager {
+    pub async fn new() -> Result<Self> {
+        Self::new_with_pool_size(2).await
+    }
+
+    pub async fn new_with_pool_size(pool_size: usize) -> Result<Self> {
+        let binary_manager = BinaryManager::new()?;
+        let http_client = reqwest::Client::new();
+
+        Ok(Self {
+            binary_manager,
+            binary_path: Arc::new(RwLock::new(None)),
+            process_pools: Arc::new(Mutex::new(HashMap::new())),
+            pool_size,
+            http_client,
+        })
+    }
+
+    async fn ensure_binary(&self) -> Result<PathBuf> {
+        let read_lock = self.binary_path.read().await;
+        if let Some(path) = read_lock.as_ref() {
+            tracing::trace!(path = %path.display(), "Binary path already cached");
+            return Ok(path.clone());
+        }
+        drop(read_lock);
+
+        tracing::debug!("Binary path not cached, acquiring write lock");
+        let mut write_lock = self.binary_path.write().await;
+        if let Some(path) = write_lock.as_ref() {
+            tracing::trace!(path = %path.display(), "Binary path set by another task");
+            return Ok(path.clone());
+        }
+
+        tracing::info!("Ensuring binary is available");
+        let path = self.binary_manager.ensure_binary().await?;
+        tracing::info!(path = %path.display(), "Binary path obtained");
+        *write_lock = Some(path.clone());
+        Ok(path)
+    }
+
+    pub async fn ensure_binary_path(&self) -> Result<PathBuf> {
+        self.ensure_binary().await
+    }
+
+    // Helper function to get-or-create a pool for a specific model
+    async fn get_pool(&self, model: &str) -> Result<Arc<ProcessPool>> {
+        // 1. Lock the pool map
+        let mut pools = self.process_pools.lock().await;
+
+        // 2. Check if a pool for this model already exists
+        if let Some(pool) = pools.get(model) {
+            tracing::debug!(model = %model, "Using existing process pool");
+            return Ok(pool.clone());
+        }
+
+        tracing::info!(model = %model, pool_size = self.pool_size, "Creating new process pool");
+
+        // 3. If not, create, initialize, and insert it
+        let binary_path = self.ensure_binary().await?;
+        let mut new_pool = ProcessPool::new(
+            binary_path,
+            model.to_string(),
+            self.pool_size,
+        );
+
+        new_pool.initialize().await?; // Initialize *before* inserting
+
+        let pool_arc = Arc::new(new_pool);
+        pools.insert(model.to_string(), pool_arc.clone());
+        tracing::info!(model = %model, "Process pool created and initialized");
+        Ok(pool_arc)
+    }
+
+    async fn ensure_server_running(&self) -> Result<()> {
+        let binary_path = self.ensure_binary().await?;
+        
+        // Check if port 9379 is listening
+        if tokio::net::TcpStream::connect("127.0.0.1:9379").await.is_ok() {
+            tracing::debug!("lit serve is already running on port 9379");
+            return Ok(());
+        }
+        
+        tracing::info!("Starting lit serve on port 9379...");
+        let mut child = tokio::process::Command::new(&binary_path)
+            .arg("serve")
+            .arg("--port")
+            .arg("9379")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .context("Failed to spawn lit serve")?;
+            
+        // Wait a bit for the server to bind and listen
+        for _ in 0..20 {
+            tokio::time::sleep(tokio::time::Duration::from_millis(250)).await;
+            if tokio::net::TcpStream::connect("127.0.0.1:9379").await.is_ok() {
+                tracing::info!("lit serve is now listening on port 9379");
+                // Run a background task to read output of the server process so it doesn't block
+                tokio::spawn(async move {
+                    let mut stdout = child.stdout.take().unwrap();
+                    let mut stderr = child.stderr.take().unwrap();
+                    tokio::join!(
+                        async {
+                            use tokio::io::AsyncReadExt;
+                            let mut buf = [0u8; 1024];
+                            while let Ok(n) = stdout.read(&mut buf).await {
+                                if n == 0 { break; }
+                            }
+                        },
+                        async {
+                            use tokio::io::AsyncReadExt;
+                            let mut buf = [0u8; 1024];
+                            while let Ok(n) = stderr.read(&mut buf).await {
+                                if n == 0 { break; }
+                            }
+                        }
+                    );
+                    let _ = child.kill().await;
+                });
+                return Ok(());
+            }
+        }
+        
+        anyhow::bail!("lit serve failed to start on port 9379")
+    }
+
+    pub async fn run_completion(&self, model: &str, prompt: &str) -> Result<String> {
+        use tokio_stream::StreamExt;
+        let mut stream = self.run_completion_stream(model, prompt).await?;
+        let mut response = String::new();
+        while let Some(chunk_res) = stream.next().await {
+            let chunk = chunk_res?;
+            response.push_str(&chunk);
+        }
+        Ok(response)
+    }
+
+    // New streaming method using single-shot GPU execution
+    pub async fn run_completion_stream(
+        &self,
+        model: &str,
+        prompt: &str,
+    ) -> Result<impl Stream<Item = Result<String>>> {
+        tracing::debug!(model = %model, prompt_length = prompt.len(), "Running single-shot GPU completion stream");
+
+        let binary_path = self.ensure_binary().await?;
+        let clean_model = model.strip_suffix(".litertlm").unwrap_or(model);
+        let model_file = format!("{}.litertlm", clean_model);
+
+        // Standardize the prompt to single-line by replacing newlines with spaces
+        let single_line_prompt = prompt.replace('\r', "").replace('\n', " ");
+
+        let mut child = tokio::process::Command::new(&binary_path)
+            .arg("run")
+            .arg(&model_file)
+            .arg("--backend")
+            .arg("gpu")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .context("Failed to spawn lit process")?;
+
+        let mut stdin = child.stdin.take().ok_or_else(|| anyhow::anyhow!("Failed to open stdin"))?;
+        
+        // Write prompt and close stdin to signal EOF
+        use tokio::io::AsyncWriteExt;
+        stdin.write_all(single_line_prompt.as_bytes()).await.context("Failed to write to stdin")?;
+        stdin.write_all(b"\n").await.context("Failed to write newline to stdin")?;
+        drop(stdin);
+
+        let stdout = child.stdout.take().ok_or_else(|| anyhow::anyhow!("Failed to open stdout"))?;
+        
+        use futures_util::StreamExt;
+        use tokio_util::codec::LinesCodec;
+        
+        let mut framed = tokio_util::codec::FramedRead::new(stdout, LinesCodec::new());
+
+        let out_stream = async_stream::try_stream! {
+            let mut header_seen = false;
+            while let Some(line_res) = framed.next().await {
+                let line = line_res.context("Failed to read line from process")?;
+                
+                if !header_seen {
+                    if line.contains("loaded. Start chatting") {
+                        header_seen = true;
+                    }
+                    continue;
+                }
+                
+                if line.trim() == "Exiting." {
+                    break;
+                }
+                
+                // Yield the response line.
+                yield format!("{}\n", line);
+            }
+            // Ensure the child process is reaped
+            let _ = child.wait().await;
+        };
+
+        Ok(Box::pin(out_stream))
+    }
+
+    fn run_lit_command(&self, binary_path: &PathBuf, args: &[&str]) -> Result<String> {
+        tracing::debug!(
+            binary = %binary_path.display(),
+            args = ?args,
+            "Running lit command"
+        );
+
+        let output = Command::new(binary_path)
+            .args(args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .context("Failed to execute lit command")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            tracing::error!(
+                args = ?args,
+                stderr = %stderr,
+                "Lit command failed"
+            );
+            anyhow::bail!("Command failed: {}", stderr);
+        }
+
+        tracing::debug!(args = ?args, "Lit command succeeded");
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    }
+
+    pub async fn list(&self, show_all: bool) -> Result<()> {
+        let binary_path = self.ensure_binary().await?;
+        let args = if show_all {
+            vec!["list", "--show_all"]
+        } else {
+            vec!["list"]
+        };
+        let output = self.run_lit_command(&binary_path, &args)?;
+        println!("{}", output);
+        Ok(())
+    }
+
+    /// List models and return the output as a String (library API)
+    pub async fn list_models(&self, show_all: bool) -> Result<String> {
+        let binary_path = self.ensure_binary().await?;
+        let args = if show_all {
+            vec!["list", "--show_all"]
+        } else {
+            vec!["list"]
+        };
+        self.run_lit_command(&binary_path, &args)
+    }
+
+    pub async fn pull(&self, model: &str, alias: Option<&str>, hf_token: Option<&str>) -> Result<()> {
+        let binary_path = self.ensure_binary().await?;
+        tracing::info!("Pulling model: {}", model);
+
+        let mut cmd = Command::new(&binary_path);
+        cmd.arg("pull").arg(model);
+
+        if let Some(alias_val) = alias {
+            cmd.arg("--alias").arg(alias_val);
+        }
+
+        if let Some(token) = hf_token {
+            cmd.arg("--hf_token").arg(token);
+        }
+
+        let output = cmd
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .status()
+            .context("Failed to pull model")?;
+
+        if !output.success() {
+            anyhow::bail!("Failed to pull model");
+        }
+
+        Ok(())
+    }
+
+    /// Pull a model without writing to stdout (for library/MCP usage)
+    /// Returns a callback-based progress tracker
+    pub async fn pull_with_progress<F>(
+        &self,
+        model: &str,
+        alias: Option<&str>,
+        hf_token: Option<&str>,
+        mut progress_callback: F,
+    ) -> Result<String>
+    where
+        F: FnMut(f32) + Send + 'static,
+    {
+        let binary_path = self.ensure_binary().await?;
+        tracing::info!(
+            model = %model,
+            alias = ?alias,
+            has_token = hf_token.is_some(),
+            "Pulling model with progress tracking"
+        );
+
+        let mut cmd = Command::new(&binary_path);
+        cmd.arg("pull").arg(model);
+
+        if let Some(alias_val) = alias {
+            cmd.arg("--alias").arg(alias_val);
+        }
+
+        if let Some(token) = hf_token {
+            cmd.arg("--hf_token").arg(token);
+        }
+
+        use tokio::io::BufReader;
+        use tokio::process::Command as TokioCommand;
+
+        let mut child = TokioCommand::from(cmd)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .context("Failed to spawn pull command")?;
+
+        let stdout = child.stdout.take().context("Failed to capture stdout")?;
+
+        // Read stdout byte by byte to handle carriage returns
+        use tokio::io::AsyncReadExt;
+        let mut stdout_reader = BufReader::new(stdout);
+        let mut buffer = vec![0u8; 4096];
+        let mut current_line = String::new();
+
+        loop {
+            match stdout_reader.read(&mut buffer).await {
+                Ok(0) => break, // EOF
+                Ok(n) => {
+                    let chunk = String::from_utf8_lossy(&buffer[..n]);
+                    for ch in chunk.chars() {
+                        if ch == '\r' || ch == '\n' {
+                            if !current_line.is_empty() {
+                                tracing::debug!("Pull output line: {}", current_line);
+                                // Parse progress from lines like: "[                    ] 1.23%"
+                                if let Some(percent_str) = current_line.split(']').nth(1) {
+                                    if let Some(pct) = percent_str.trim().strip_suffix('%') {
+                                        if let Ok(progress) = pct.parse::<f32>() {
+                                            tracing::debug!("Parsed progress: {}%", progress);
+                                            progress_callback(progress);
+                                        }
+                                    }
+                                }
+                                current_line.clear();
+                            }
+                        } else {
+                            current_line.push(ch);
+                        }
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+
+        let stderr = child.stderr.take();
+        let status = child.wait().await.context("Failed to wait for pull")?;
+
+        if !status.success() {
+            if let Some(mut stderr_pipe) = stderr {
+                use tokio::io::AsyncReadExt;
+                let mut stderr_content = String::new();
+                stderr_pipe.read_to_string(&mut stderr_content).await.ok();
+                tracing::error!(
+                    model = %model,
+                    stderr = %stderr_content,
+                    "Model pull failed"
+                );
+                anyhow::bail!("Failed to pull model: {}", stderr_content);
+            } else {
+                tracing::error!(model = %model, "Model pull failed (no stderr)");
+                anyhow::bail!("Failed to pull model");
+            }
+        }
+
+        tracing::info!(model = %model, "Model pull completed successfully");
+        Ok("Download completed".to_string())
+    }
+
+    /// Pull a model without writing to stdout (for library/MCP usage) - simple version
+    pub async fn pull_quiet(&self, model: &str, alias: Option<&str>, hf_token: Option<&str>) -> Result<String> {
+        self.pull_with_progress(model, alias, hf_token, |_| {}).await
+    }
+
+    pub async fn remove(&self, model: &str) -> Result<()> {
+        let binary_path = self.ensure_binary().await?;
+        let output = self.run_lit_command(&binary_path, &["rm", model])?;
+        println!("{}", output);
+        Ok(())
+    }
+
+    /// Remove a model and return the output (for library/MCP usage)
+    pub async fn remove_quiet(&self, model: &str) -> Result<String> {
+        let binary_path = self.ensure_binary().await?;
+        self.run_lit_command(&binary_path, &["rm", model])
+    }
+
+    pub async fn run_interactive(&self, model: &str) -> Result<()> {
+        let binary_path = self.ensure_binary().await?;
+
+        let status = Command::new(&binary_path)
+            .args(&["run", model])
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .status()
+            .context("Failed to run interactive session")?;
+
+        if !status.success() {
+            anyhow::bail!("Interactive session failed");
+        }
+
+        Ok(())
+    }
+
+    pub fn generate_completion(&self, shell: &str) -> Result<()> {
+        println!("Completion generation for {} not yet implemented", shell);
+        Ok(())
+    }
+
+    pub async fn serve(&self, port: u16) -> Result<()> {
+        tracing::info!("Starting server on port {}", port);
+
+        // Ensure binary is ready
+        let binary_path = self.ensure_binary().await?;
+        tracing::info!("Binary ready at: {}", binary_path.display());
+
+        // Default model for initialization - pool will be created on-demand
+        let model = std::env::var("LITERT_MODEL")
+            .unwrap_or_else(|_| "gemma-3n-E4B".to_string());
+
+        // Pre-initialize pool for default model
+        let pool = self.get_pool(&model).await?;
+        tracing::info!("Process pool initialized for model '{}' with {} instances", model, self.pool_size);
+
+        // Start server - AppState holds both pool and manager
+        let app_state = AppState {
+            pool,
+            manager: Arc::new(self.clone()),
+        };
+        let app = create_router(app_state);
+
+        let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port))
+            .await
+            .context("Failed to bind to port")?;
+
+        tracing::info!("Server listening on http://0.0.0.0:{}", port);
+        tracing::info!("OpenAI-compatible endpoint: http://localhost:{}/v1/chat/completions", port);
+
+        axum::serve(listener, app)
+            .await
+            .context("Server error")?;
+
+        Ok(())
+    }
+}

@@ -1,0 +1,56 @@
+[
+  {
+    "type": "function",
+    "function": {
+      "name": "plot_function",
+      "description": "수학 함수를 고해상도 유니코드 그래프로 그립니다. 임의의 수식을 지원하며(sin, cos, asin, exp, sqrt, log 등), 수식에 y 변수가 포함되면 자동으로 3D 와이어프레임으로 렌더링합니다.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "expression": {
+            "type": "string",
+            "description": "그릴 수학 함수 식. 2D: f(x) 형태 (예: sin(x), asin(x), x^2). 3D: f(x,y) 형태 (예: sin(x)*cos(y), x^2+y^2)"
+          },
+          "title": {
+            "type": "string",
+            "description": "그래프의 제목 (선택 사항)"
+          },
+          "mode": {
+            "type": "string",
+            "description": "렌더링 모드: '2d' 또는 '3d'. 생략 시 수식에 y가 포함되면 자동으로 3D"
+          }
+        },
+        "required": ["expression"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "create_or_update_tool",
+      "description": "새로운 동적 도구(파이썬 스크립트)를 생성하거나 기존 도구를 수정/업데이트합니다. 성공적으로 등록된 도구는 즉시 시스템에 로드되어 AI가 즉각 사용할 수 있습니다.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "도구의 고유 이름 (영문 소문자와 언더스코어 조합만 사용 가능, 예: fetch_currency_rate)"
+          },
+          "description": {
+            "type": "string",
+            "description": "이 도구가 무엇을 하는지, 어떤 문제를 해결하는지 상세한 설명 (AI가 사용 시점을 판단하기 위함)"
+          },
+          "parameters": {
+            "type": "object",
+            "description": "도구가 요구하는 파라미터 규격 (OpenAI/Ollama 호환 JSON Schema 형식)"
+          },
+          "code": {
+            "type": "string",
+            "description": "도구의 파이썬 코드. 입력 매개변수는 sys.argv[1]로 전달되는 임시 JSON 파일 경로에서 읽어와야 합니다 (예: with open(sys.argv[1]) as f: args = json.load(f)). 최종 실행 결과는 반드시 표준 출력(print)으로 출력해야 합니다."
+          }
+        },
+        "required": ["name", "description", "code"]
+      }
+    }
+  }
+]
