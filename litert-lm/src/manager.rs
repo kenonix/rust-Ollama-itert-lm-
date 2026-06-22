@@ -9,6 +9,7 @@ use tokio_stream::Stream;
 use crate::binary::BinaryManager;
 use crate::process::ProcessPool;
 use crate::server::{create_router, AppState};
+use crate::native_engine::NativeEngine;
 
 #[derive(Debug, Clone)]
 pub struct LitManager {
@@ -16,6 +17,8 @@ pub struct LitManager {
     binary_path: Arc<RwLock<Option<PathBuf>>>,
     // Map of pools, keyed by model name
     process_pools: Arc<Mutex<HashMap<String, Arc<ProcessPool>>>>,
+    // Map of native engines, keyed by model name
+    native_engines: Arc<Mutex<HashMap<String, Arc<NativeEngine>>>>,
     // Make pool size configurable
     pool_size: usize,
     http_client: reqwest::Client,
@@ -34,6 +37,7 @@ impl LitManager {
             binary_manager,
             binary_path: Arc::new(RwLock::new(None)),
             process_pools: Arc::new(Mutex::new(HashMap::new())),
+            native_engines: Arc::new(Mutex::new(HashMap::new())),
             pool_size,
             http_client,
         })
@@ -92,6 +96,40 @@ impl LitManager {
         pools.insert(model.to_string(), pool_arc.clone());
         tracing::info!(model = %model, "Process pool created and initialized");
         Ok(pool_arc)
+    }
+
+    // Helper function to get-or-create a native engine instance for a model
+    async fn get_native_engine(&self, model: &str) -> Result<Arc<NativeEngine>> {
+        let mut engines = self.native_engines.lock().await;
+
+        if let Some(engine) = engines.get(model) {
+            return Ok(engine.clone());
+        }
+
+        // Try loading the library
+        let lib = crate::load_native_library()
+            .context("Failed to load native LiteRT-LM C++ shared library")?;
+            
+        // Locate the model file path
+        let model_path = crate::native_engine::find_model_path(model)
+            .context("Failed to locate model file on disk")?;
+
+        let lib_arc = Arc::new(lib);
+        let engine = match NativeEngine::new(lib_arc.clone(), &model_path, "gpu") {
+            Ok(eng) => {
+                tracing::info!("Successfully initialized native LiteRT-LM engine with GPU backend");
+                eng
+            }
+            Err(e) => {
+                tracing::warn!("Failed to initialize native engine with GPU backend: {}. Retrying with CPU backend...", e);
+                NativeEngine::new(lib_arc, &model_path, "cpu")
+                    .context("Failed to initialize native engine with CPU backend")?
+            }
+        };
+
+        let engine_arc = Arc::new(engine);
+        engines.insert(model.to_string(), engine_arc.clone());
+        Ok(engine_arc)
     }
 
     async fn ensure_server_running(&self) -> Result<()> {
@@ -158,13 +196,33 @@ impl LitManager {
         Ok(response)
     }
 
-    // New streaming method using single-shot GPU execution
+    // New streaming method using native FFI or fallback to single-shot CLI
     pub async fn run_completion_stream(
         &self,
         model: &str,
         prompt: &str,
-    ) -> Result<impl Stream<Item = Result<String>>> {
-        tracing::debug!(model = %model, prompt_length = prompt.len(), "Running single-shot GPU completion stream");
+    ) -> Result<std::pin::Pin<Box<dyn Stream<Item = Result<String>> + Send>>> {
+        // Try native FFI engine first
+        match self.get_native_engine(model).await {
+            Ok(native_engine) => {
+                tracing::info!("Using native LiteRT-LM engine for completion");
+                match native_engine.run_completion_stream(prompt) {
+                    Ok(native_stream) => {
+                        use futures_util::StreamExt;
+                        let mapped_stream = native_stream.map(|item| item.map_err(anyhow::Error::from));
+                        return Ok(Box::pin(mapped_stream));
+                    }
+                    Err(e) => {
+                        tracing::warn!("Native completion stream failed to start: {}. Falling back to CLI mode.", e);
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::info!("Native engine not available: {}. Falling back to CLI mode.", e);
+            }
+        }
+
+        tracing::debug!(model = %model, prompt_length = prompt.len(), "Running single-shot GPU completion stream (CLI fallback)");
 
         let binary_path = self.ensure_binary().await?;
         // lit CLI only accepts registry/cache model IDs (e.g. "gemma-4-E2B-it"),

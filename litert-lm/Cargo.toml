@@ -85,6 +85,9 @@ version = "0.3"
 [dependencies.anyhow]
 version = "1.0"
 
+[dependencies.libloading]
+version = "0.8"
+
 [dependencies.axum]
 version = "0.7"
 
