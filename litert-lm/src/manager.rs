@@ -182,6 +182,8 @@ impl LitManager {
             }
         };
 
+        println!("[디버그] 모델명 리졸브: {} -> {}", model, model_file);
+
         // Standardize the prompt to single-line by replacing newlines with spaces
         let single_line_prompt = prompt.replace('\r', "").replace('\n', " ");
 
