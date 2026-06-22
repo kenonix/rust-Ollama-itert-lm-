@@ -167,17 +167,24 @@ impl LitManager {
         tracing::debug!(model = %model, prompt_length = prompt.len(), "Running single-shot GPU completion stream");
 
         let binary_path = self.ensure_binary().await?;
-        let model_file = if std::path::Path::new(model).exists() {
-            if !model.contains('/') && !model.contains('\\') {
-                format!("./{}", model)
+        let path = std::path::Path::new(model);
+        let model_file = if path.exists() {
+            if path.is_file() {
+                if let Ok(abs) = std::fs::canonicalize(path) {
+                    abs.to_string_lossy().to_string()
+                } else {
+                    model.to_string()
+                }
             } else {
+                println!("[경고] 모델 경로 {:?}가 존재하지만 일반 파일이 아닙니다.", model);
                 model.to_string()
             }
         } else {
             let with_ext = format!("{}.litertlm", model);
-            if std::path::Path::new(&with_ext).exists() {
-                if !with_ext.contains('/') && !with_ext.contains('\\') {
-                    format!("./{}", with_ext)
+            let ext_path = std::path::Path::new(&with_ext);
+            if ext_path.exists() && ext_path.is_file() {
+                if let Ok(abs) = std::fs::canonicalize(ext_path) {
+                    abs.to_string_lossy().to_string()
                 } else {
                     with_ext
                 }
