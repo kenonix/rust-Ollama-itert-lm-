@@ -168,11 +168,19 @@ impl LitManager {
 
         let binary_path = self.ensure_binary().await?;
         let model_file = if std::path::Path::new(model).exists() {
-            model.to_string()
+            if !model.contains('/') && !model.contains('\\') {
+                format!("./{}", model)
+            } else {
+                model.to_string()
+            }
         } else {
             let with_ext = format!("{}.litertlm", model);
             if std::path::Path::new(&with_ext).exists() {
-                with_ext
+                if !with_ext.contains('/') && !with_ext.contains('\\') {
+                    format!("./{}", with_ext)
+                } else {
+                    with_ext
+                }
             } else {
                 if model.ends_with(".litertlm") {
                     model.strip_suffix(".litertlm").unwrap().to_string()
