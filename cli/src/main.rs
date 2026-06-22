@@ -40,7 +40,48 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  {}/exit{}: 클라이언트 종료", yellow, reset);
     println!("------------------------------------------------------------");
 
-    let server_url = "http://localhost:11434/api/chat";
+    let args: Vec<String> = std::env::args().collect();
+    let mut host = "localhost".to_string();
+    let mut port = "11434".to_string();
+
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--host" | "-h" => {
+                if i + 1 < args.len() {
+                    host = args[i + 1].clone();
+                    i += 2;
+                } else {
+                    eprintln!("Error: --host requires a value");
+                    std::process::exit(1);
+                }
+            }
+            "--port" | "-p" => {
+                if i + 1 < args.len() {
+                    port = args[i + 1].clone();
+                    i += 2;
+                } else {
+                    eprintln!("Error: --port requires a value");
+                    std::process::exit(1);
+                }
+            }
+            _ => {
+                let val = &args[i];
+                if val.contains(':') {
+                    let parts: Vec<&str> = val.split(':').collect();
+                    host = parts[0].to_string();
+                    port = parts[1].to_string();
+                } else {
+                    host = val.clone();
+                }
+                i += 1;
+            }
+        }
+    }
+
+    let server_url = format!("http://{}:{}/api/chat", host, port);
+    println!("{}연결 대상 Ollama API 주소: {}{}\n", bold, server_url, reset);
+
     let model_name = "gemma-4-E2B-it.litertlm";
     let client = Client::new();
     let mut history: Vec<ChatMessage> = Vec::new();
@@ -85,7 +126,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         print!("\n{}{}Assistant >{} ", bold, cyan, reset);
         io::stdout().flush()?;
 
-        let response = match client.post(server_url)
+        let response = match client.post(&server_url)
             .json(&req_body)
             .send()
             .await 
