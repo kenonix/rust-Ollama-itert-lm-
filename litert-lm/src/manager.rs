@@ -167,8 +167,20 @@ impl LitManager {
         tracing::debug!(model = %model, prompt_length = prompt.len(), "Running single-shot GPU completion stream");
 
         let binary_path = self.ensure_binary().await?;
-        let clean_model = model.strip_suffix(".litertlm").unwrap_or(model);
-        let model_file = format!("{}.litertlm", clean_model);
+        let model_file = if std::path::Path::new(model).exists() {
+            model.to_string()
+        } else {
+            let with_ext = format!("{}.litertlm", model);
+            if std::path::Path::new(&with_ext).exists() {
+                with_ext
+            } else {
+                if model.ends_with(".litertlm") {
+                    model.strip_suffix(".litertlm").unwrap().to_string()
+                } else {
+                    model.to_string()
+                }
+            }
+        };
 
         // Standardize the prompt to single-line by replacing newlines with spaces
         let single_line_prompt = prompt.replace('\r', "").replace('\n', " ");
