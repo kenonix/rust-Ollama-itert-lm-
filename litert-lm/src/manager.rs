@@ -180,7 +180,7 @@ impl LitManager {
             .arg("gpu")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::inherit())
             .spawn()
             .context("Failed to spawn lit process")?;
 

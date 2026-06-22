@@ -158,7 +158,10 @@ pub async fn handle_chat(
 ) -> impl IntoResponse {
     let req: ChatRequest = match serde_json::from_str(&req_body) {
         Ok(r) => r,
-        Err(e) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+        Err(e) => {
+            println!("[API] /api/chat 요청 바디 파싱 실패: {}", e);
+            return (StatusCode::BAD_REQUEST, e.to_string()).into_response();
+        }
     };
     
     let want_stream = req.stream.unwrap_or(true);
@@ -184,6 +187,13 @@ pub async fn handle_chat(
                 }
             }
         }
+    }
+
+    let user_content = current_msg_j.get("content").and_then(|c| c.as_str()).unwrap_or("");
+    println!("[API] /api/chat 요청 수신 (stream: {}, messages_count: {})", want_stream, req.messages.as_ref().map(|m| m.len()).unwrap_or(0));
+    println!("  - 사용자 메시지: {:?}", user_content);
+    if let Some(ref tools) = req.tools {
+        println!("  - 제공된 도구 개수: {}개", tools.len());
     }
     
     let mut opt = serde_json::json!({
@@ -233,9 +243,14 @@ pub async fn handle_chat(
         let model_name = state.model_name.clone();
         let stream = async_stream::stream! {
             let mut last_tool_calls: Option<serde_json::Value> = None;
+            let mut chunk_count = 0;
             while let Some(event) = event_rx.recv().await {
                 match event {
                     ServerStreamEvent::Chunk(c) => {
+                        if chunk_count == 0 {
+                            println!("  -> 모델 응답 생성 시작...");
+                        }
+                        chunk_count += 1;
                         let chunk_j = serde_json::json!({
                             "model": model_name,
                             "created_at": get_iso8601_now(),
@@ -248,6 +263,7 @@ pub async fn handle_chat(
                         yield Ok::<_, anyhow::Error>(format!("{}\n", chunk_j.to_string()));
                     }
                     ServerStreamEvent::ToolCall { raw_tool_calls_json } => {
+                        println!("  -> [도구 호출 감지]: {}", raw_tool_calls_json);
                         if let Ok(j) = serde_json::from_str::<serde_json::Value>(&raw_tool_calls_json) {
                             if let Some(tc) = j.get("tool_calls") {
                                 last_tool_calls = Some(tc.clone());
@@ -287,9 +303,11 @@ pub async fn handle_chat(
                         yield Ok::<_, anyhow::Error>(format!("{}\n", chunk_j.to_string()));
                     }
                     ServerStreamEvent::Error(e) => {
+                        println!("  -> [오류 발생]: {}", e);
                         yield Err(anyhow::anyhow!(e));
                     }
                     ServerStreamEvent::Done { final_history, prompt_tokens, completion_tokens } => {
+                        println!("  -> [완료] (프롬프트 토큰: {}, 완료 토큰: {})", prompt_tokens, completion_tokens);
                         let mut final_j = serde_json::json!({
                             "model": model_name,
                             "done": true,
@@ -325,6 +343,7 @@ pub async fn handle_chat(
                     final_text.push_str(&c);
                 }
                 ServerStreamEvent::ToolCall { raw_tool_calls_json } => {
+                    println!("  -> [도구 호출 감지]: {}", raw_tool_calls_json);
                     if let Ok(j) = serde_json::from_str::<serde_json::Value>(&raw_tool_calls_json) {
                         if let Some(tc) = j.get("tool_calls") {
                             last_tool_calls = Some(tc.clone());
@@ -334,9 +353,11 @@ pub async fn handle_chat(
                 ServerStreamEvent::ToolResult { .. } => {}
                 ServerStreamEvent::Guidance(..) => {}
                 ServerStreamEvent::Error(e) => {
+                    println!("  -> [오류 발생]: {}", e);
                     return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response();
                 }
-                ServerStreamEvent::Done { final_history, .. } => {
+                ServerStreamEvent::Done { final_history, prompt_tokens, completion_tokens } => {
+                    println!("  -> [완료] (프롬프트 토큰: {}, 완료 토큰: {})", prompt_tokens, completion_tokens);
                     last_history = final_history;
                 }
             }
@@ -368,7 +389,10 @@ pub async fn handle_generate(
 ) -> impl IntoResponse {
     let req: GenerateRequest = match serde_json::from_str(&req_body) {
         Ok(r) => r,
-        Err(e) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+        Err(e) => {
+            println!("[API] /api/generate 요청 바디 파싱 실패: {}", e);
+            return (StatusCode::BAD_REQUEST, e.to_string()).into_response();
+        }
     };
     
     let want_stream = req.stream.unwrap_or(true);
@@ -376,8 +400,11 @@ pub async fn handle_generate(
     let history_arr = serde_json::json!([]);
     let current_msg_j = serde_json::json!({
         "role": "user",
-        "content": req.prompt
+        "content": req.prompt.clone()
     });
+
+    println!("[API] /api/generate 요청 수신 (stream: {})", want_stream);
+    println!("  - 사용자 프롬프트: {:?}", req.prompt);
     
     let mut opt = serde_json::json!({
         "max_output_tokens": 262144,
@@ -417,9 +444,14 @@ pub async fn handle_generate(
     if want_stream {
         let model_name = state.model_name.clone();
         let stream = async_stream::stream! {
+            let mut chunk_count = 0;
             while let Some(event) = event_rx.recv().await {
                 match event {
                     ServerStreamEvent::Chunk(c) => {
+                        if chunk_count == 0 {
+                            println!("  -> 모델 응답 생성 시작...");
+                        }
+                        chunk_count += 1;
                         let chunk_j = serde_json::json!({
                             "model": model_name,
                             "created_at": get_iso8601_now(),
@@ -432,9 +464,11 @@ pub async fn handle_generate(
                     ServerStreamEvent::ToolResult { .. } => {}
                     ServerStreamEvent::Guidance(..) => {}
                     ServerStreamEvent::Error(e) => {
+                        println!("  -> [오류 발생]: {}", e);
                         yield Err(anyhow::anyhow!(e));
                     }
                     ServerStreamEvent::Done { prompt_tokens, completion_tokens, .. } => {
+                        println!("  -> [완료] (프롬프트 토큰: {}, 완료 토큰: {})", prompt_tokens, completion_tokens);
                         let final_j = serde_json::json!({
                             "model": model_name,
                             "created_at": get_iso8601_now(),
@@ -467,9 +501,11 @@ pub async fn handle_generate(
                 ServerStreamEvent::ToolResult { .. } => {}
                 ServerStreamEvent::Guidance(..) => {}
                 ServerStreamEvent::Error(e) => {
+                    println!("  -> [오류 발생]: {}", e);
                     return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response();
                 }
                 ServerStreamEvent::Done { prompt_tokens, completion_tokens, .. } => {
+                    println!("  -> [완료] (프롬프트 토큰: {}, 완료 토큰: {})", prompt_tokens, completion_tokens);
                     prompt_tokens_val = prompt_tokens;
                     completion_tokens_val = completion_tokens;
                 }
@@ -665,7 +701,10 @@ pub async fn handle_completions(
 ) -> impl IntoResponse {
     let req: ChatRequest = match serde_json::from_str(&req_body) {
         Ok(r) => r,
-        Err(e) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+        Err(e) => {
+            println!("[API] /v1/chat/completions 요청 바디 파싱 실패: {}", e);
+            return (StatusCode::BAD_REQUEST, e.to_string()).into_response();
+        }
     };
     
     let want_stream = req.stream.unwrap_or(false);
@@ -691,6 +730,13 @@ pub async fn handle_completions(
                 }
             }
         }
+    }
+
+    let user_content = current_msg_j.get("content").and_then(|c| c.as_str()).unwrap_or("");
+    println!("[API] /v1/chat/completions 요청 수신 (stream: {}, messages_count: {})", want_stream, req.messages.as_ref().map(|m| m.len()).unwrap_or(0));
+    println!("  - 사용자 메시지: {:?}", user_content);
+    if let Some(ref tools) = req.tools {
+        println!("  - 제공된 도구 개수: {}개", tools.len());
     }
     
     let mut opt = serde_json::json!({
@@ -740,9 +786,14 @@ pub async fn handle_completions(
         let model_name = state.model_name.clone();
         let stream = async_stream::stream! {
             let mut last_tool_calls: Option<serde_json::Value> = None;
+            let mut chunk_count = 0;
             while let Some(event) = event_rx.recv().await {
                 match event {
                     ServerStreamEvent::Chunk(c) => {
+                        if chunk_count == 0 {
+                            println!("  -> 모델 응답 생성 시작...");
+                        }
+                        chunk_count += 1;
                         let chunk_j = serde_json::json!({
                             "id": "chatcmpl-litert",
                             "object": "chat.completion.chunk",
@@ -760,6 +811,7 @@ pub async fn handle_completions(
                         yield Ok::<_, anyhow::Error>(format!("data: {}\n\n", chunk_j.to_string()));
                     }
                     ServerStreamEvent::ToolCall { raw_tool_calls_json } => {
+                        println!("  -> [도구 호출 감지]: {}", raw_tool_calls_json);
                         if let Ok(j) = serde_json::from_str::<serde_json::Value>(&raw_tool_calls_json) {
                             if let Some(tc) = j.get("tool_calls") {
                                 last_tool_calls = Some(tc.clone());
@@ -769,9 +821,11 @@ pub async fn handle_completions(
                     ServerStreamEvent::ToolResult { .. } => {}
                     ServerStreamEvent::Guidance(..) => {}
                     ServerStreamEvent::Error(e) => {
+                        println!("  -> [오류 발생]: {}", e);
                         yield Err(anyhow::anyhow!(e));
                     }
-                    ServerStreamEvent::Done { .. } => {
+                    ServerStreamEvent::Done { prompt_tokens, completion_tokens, .. } => {
+                        println!("  -> [완료] (프롬프트 토큰: {}, 완료 토큰: {})", prompt_tokens, completion_tokens);
                         if let Some(tc) = last_tool_calls.take() {
                             let chunk_j = serde_json::json!({
                                 "id": "chatcmpl-litert",
@@ -822,6 +876,7 @@ pub async fn handle_completions(
                     final_text.push_str(&c);
                 }
                 ServerStreamEvent::ToolCall { raw_tool_calls_json } => {
+                    println!("  -> [도구 호출 감지]: {}", raw_tool_calls_json);
                     if let Ok(j) = serde_json::from_str::<serde_json::Value>(&raw_tool_calls_json) {
                         if let Some(tc) = j.get("tool_calls") {
                             last_tool_calls = Some(tc.clone());
@@ -831,9 +886,12 @@ pub async fn handle_completions(
                 ServerStreamEvent::ToolResult { .. } => {}
                 ServerStreamEvent::Guidance(..) => {}
                 ServerStreamEvent::Error(e) => {
+                    println!("  -> [오류 발생]: {}", e);
                     return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response();
                 }
-                ServerStreamEvent::Done { .. } => {}
+                ServerStreamEvent::Done { prompt_tokens, completion_tokens, .. } => {
+                    println!("  -> [완료] (프롬프트 토큰: {}, 완료 토큰: {})", prompt_tokens, completion_tokens);
+                }
             }
         }
         
