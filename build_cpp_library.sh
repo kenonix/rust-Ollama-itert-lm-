@@ -72,24 +72,36 @@ git checkout "$VERSION" || git checkout main
 echo "[4/5] Building LiteRT-LM C Shared Library via Bazel..."
 echo "This might take a while (typically 15-45 minutes depending on CPU)..."
 
-# Note: We build using opt mode. --define=litert_link_capi_so=true resolves GPU symbols.
-# On Linux, OpenCL is disabled by default in .bazelrc, but if we want GPU support on ARM64,
-# LiteRT will dynamically load OpenCL or Vulkan drivers on the target system.
-$BAZEL_CMD build //c:litert-lm -c opt
+# The shared-library target is defined in python/litert_lm/BUILD.
+$BAZEL_CMD build //python/litert_lm:litert-lm -c opt
 
 # 5. Copy Build Artifacts
 echo "[5/5] Deploying build artifacts..."
 mkdir -p "$LIB_DIR"
 mkdir -p "$INCLUDE_DIR"
 
-SO_FILE="bazel-bin/c/liblitert-lm.so"
-if [ ! -f "$SO_FILE" ]; then
-    # Fallback/MacOS check
-    if [ -f "bazel-bin/c/liblitert-lm.dylib" ]; then
-        SO_FILE="bazel-bin/c/liblitert-lm.dylib"
-    elif [ -f "bazel-bin/c/litert-lm.dll" ]; then
-        SO_FILE="bazel-bin/c/litert-lm.dll"
+SO_FILE=""
+for candidate in \
+    "bazel-bin/python/litert_lm/liblitert-lm.so" \
+    "bazel-bin/python/litert_lm/litert-lm.so" \
+    "bazel-bin/python/litert_lm/litert-lm"; do
+    if [ -f "$candidate" ]; then
+        SO_FILE="$candidate"
+        break
     fi
+done
+
+if [ -z "$SO_FILE" ]; then
+    # Fallback/MacOS check
+    for candidate in \
+        "bazel-bin/python/litert_lm/liblitert-lm.dylib" \
+        "bazel-bin/python/litert_lm/litert-lm.dylib" \
+        "bazel-bin/python/litert_lm/litert-lm.dll"; do
+        if [ -f "$candidate" ]; then
+            SO_FILE="$candidate"
+            break
+        fi
+    done
 fi
 
 if [ -f "$SO_FILE" ]; then

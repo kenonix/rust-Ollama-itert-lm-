@@ -35,6 +35,9 @@ pub mod native_engine;
 pub mod process;
 pub mod server;
 
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
 // Re-export main types for library users
 pub use manager::LitManager;
 pub use mcp::LiteRtMcpService;
@@ -45,11 +48,7 @@ pub use server::{create_router, AppState, ChatCompletionRequest};
 // Re-export common types
 pub type Result<T> = std::result::Result<T, anyhow::Error>;
 
-/// Helper to load the native LiteRT-LM C library from the standard path.
-pub fn load_native_library() -> Result<ffi::LibLiteRtLm> {
-    let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
-
-    // Support both .so (Linux) and .dylib (macOS)
+fn native_library_path(home: &Path) -> PathBuf {
     let lib_name = if cfg!(target_os = "macos") {
         "liblitert-lm.dylib"
     } else if cfg!(target_os = "windows") {
@@ -58,18 +57,98 @@ pub fn load_native_library() -> Result<ffi::LibLiteRtLm> {
         "liblitert-lm.so"
     };
 
-    let lib_path = home.join(".cache/litert-lm/lib").join(lib_name);
+    home.join(".cache/litert-lm/lib").join(lib_name)
+}
+
+fn repo_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf()
+}
+
+fn ensure_native_library_available() -> Result<PathBuf> {
+    let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
+    let lib_path = native_library_path(&home);
+
+    if lib_path.exists() {
+        return Ok(lib_path);
+    }
+
+    let build_script = repo_root().join("build_cpp_library.sh");
+    if !build_script.exists() {
+        return Err(anyhow::anyhow!(
+            "Native LiteRT-LM shared library not found at {} and build script was not found at {}",
+            lib_path.display(),
+            build_script.display()
+        ));
+    }
+
+    tracing::info!(
+        path = %lib_path.display(),
+        script = %build_script.display(),
+        "Native LiteRT-LM shared library is missing; building it now"
+    );
+
+    let status = Command::new("bash")
+        .arg(&build_script)
+        .current_dir(repo_root())
+        .status()
+        .map_err(|e| anyhow::anyhow!("Failed to start native library build: {e}"))?;
+
+    if !status.success() {
+        return Err(anyhow::anyhow!(
+            "Failed to build LiteRT-LM native library with {} (exit code: {:?})",
+            build_script.display(),
+            status.code()
+        ));
+    }
 
     if !lib_path.exists() {
         return Err(anyhow::anyhow!(
-            "Native LiteRT-LM shared library not found at: {}\n\
-            Please compile it using build_cpp_library.sh on the target machine.",
+            "Native LiteRT-LM shared library still missing after build at {}",
             lib_path.display()
         ));
     }
 
+    Ok(lib_path)
+}
+
+/// Helper to load the native LiteRT-LM C library from the standard path.
+pub fn load_native_library() -> Result<ffi::LibLiteRtLm> {
+    let lib_path = ensure_native_library_available()?;
+
+    if cfg!(target_os = "linux") {
+        if let Some(existing) = std::env::var_os("LD_LIBRARY_PATH") {
+            let lib_dir = lib_path.parent().unwrap_or_else(|| Path::new("."));
+            let new_value = format!("{}:{}", lib_dir.display(), existing.to_string_lossy());
+            std::env::set_var("LD_LIBRARY_PATH", new_value);
+        } else {
+            let lib_dir = lib_path.parent().unwrap_or_else(|| Path::new("."));
+            std::env::set_var("LD_LIBRARY_PATH", lib_dir);
+        }
+    }
+
     unsafe {
-        ffi::LibLiteRtLm::load(&lib_path)
-            .map_err(|e| anyhow::anyhow!("Failed to load native library: {}", e))
+        ffi::LibLiteRtLm::load(&lib_path).map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to load native library from {}: {}",
+                lib_path.display(),
+                e
+            )
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::native_library_path;
+    use std::path::Path;
+
+    #[test]
+    fn native_library_path_uses_cache_directory() {
+        let home = Path::new("/tmp/test-home");
+        let path = native_library_path(home);
+        assert!(path.ends_with(".cache/litert-lm/lib/liblitert-lm.so"));
     }
 }

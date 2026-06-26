@@ -202,107 +202,21 @@ impl LitManager {
         Ok(response)
     }
 
-    // New streaming method using native FFI or fallback to single-shot CLI
     pub async fn run_completion_stream(
         &self,
         model: &str,
         prompt: &str,
     ) -> Result<std::pin::Pin<Box<dyn Stream<Item = Result<String>> + Send>>> {
-        // Try native FFI engine first
-        match self.get_native_engine(model).await {
-            Ok(native_engine) => {
-                tracing::info!("Using native LiteRT-LM engine for completion");
-                match native_engine.run_completion_stream(prompt) {
-                    Ok(native_stream) => {
-                        use futures_util::StreamExt;
-                        let mapped_stream =
-                            native_stream.map(|item| item.map_err(anyhow::Error::from));
-                        return Ok(Box::pin(mapped_stream));
-                    }
-                    Err(e) => {
-                        tracing::warn!("Native completion stream failed to start: {}. Falling back to CLI mode.", e);
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::info!(
-                    "Native engine not available: {}. Falling back to CLI mode.",
-                    e
-                );
-            }
-        }
+        let native_engine = self.get_native_engine(model).await?;
+        tracing::info!("Using native LiteRT-LM engine for completion");
 
-        tracing::debug!(model = %model, prompt_length = prompt.len(), "Running single-shot GPU completion stream (CLI fallback)");
-
-        let binary_path = self.ensure_binary().await?;
-        let model_arg = crate::native_engine::resolve_model_argument(model);
-        println!("[디버그] lit 실행 인자: {} (원본: {})", model_arg, model);
-
-        // Standardize the prompt to single-line by replacing newlines with spaces
-        let single_line_prompt = prompt.replace('\r', "").replace('\n', " ");
-
-        let mut child = tokio::process::Command::new(&binary_path)
-            .arg("run")
-            .arg(&model_arg)
-            .arg("--backend")
-            .arg("gpu")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .context("Failed to spawn lit process")?;
-
-        let mut stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| anyhow::anyhow!("Failed to open stdin"))?;
-
-        // Write prompt and close stdin to signal EOF
-        use tokio::io::AsyncWriteExt;
-        stdin
-            .write_all(single_line_prompt.as_bytes())
-            .await
-            .context("Failed to write to stdin")?;
-        stdin
-            .write_all(b"\n")
-            .await
-            .context("Failed to write newline to stdin")?;
-        drop(stdin);
-
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| anyhow::anyhow!("Failed to open stdout"))?;
+        let native_stream = native_engine
+            .run_completion_stream(prompt)
+            .context("Failed to start native LiteRT-LM completion stream")?;
 
         use futures_util::StreamExt;
-        use tokio_util::codec::LinesCodec;
-
-        let mut framed = tokio_util::codec::FramedRead::new(stdout, LinesCodec::new());
-
-        let out_stream = async_stream::try_stream! {
-            let mut header_seen = false;
-            while let Some(line_res) = framed.next().await {
-                let line = line_res.context("Failed to read line from process")?;
-
-                if !header_seen {
-                    if line.contains("loaded. Start chatting") {
-                        header_seen = true;
-                    }
-                    continue;
-                }
-
-                if line.trim() == "Exiting." {
-                    break;
-                }
-
-                // Yield the response line.
-                yield format!("{}\n", line);
-            }
-            // Ensure the child process is reaped
-            let _ = child.wait().await;
-        };
-
-        Ok(Box::pin(out_stream))
+        let mapped_stream = native_stream.map(|item| item.map_err(anyhow::Error::from));
+        Ok(Box::pin(mapped_stream))
     }
 
     fn run_lit_command(&self, binary_path: &PathBuf, args: &[&str]) -> Result<String> {
