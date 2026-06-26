@@ -46,7 +46,11 @@ impl LitProcess {
         }
     }
 
-    async fn spawn_with_backend(binary_path: PathBuf, model: String, backend: &str) -> Result<Self> {
+    async fn spawn_with_backend(
+        binary_path: PathBuf,
+        model: String,
+        backend: &str,
+    ) -> Result<Self> {
         tracing::info!("Attempting to spawn lit process with backend={}", backend);
 
         let python_code = format!(
@@ -184,14 +188,19 @@ else:
 
             match init_result {
                 Ok(Ok(())) => {
-                    tracing::info!("Model initialization complete, processing {} buffered commands", pending_commands.len());
+                    tracing::info!(
+                        "Model initialization complete, processing {} buffered commands",
+                        pending_commands.len()
+                    );
                 }
                 Ok(Err(e)) => {
                     tracing::error!("Initialization failed: {}", e);
                     // Drain buffered commands with error
                     for cmd in pending_commands {
                         let ProcessCommand::Run { response_tx, .. } = cmd;
-                        let _ = response_tx.send(Err(anyhow::anyhow!("Process initialization failed: {}", e))).await;
+                        let _ = response_tx
+                            .send(Err(anyhow::anyhow!("Process initialization failed: {}", e)))
+                            .await;
                     }
                     let _ = child.kill().await;
                     return;
@@ -200,7 +209,9 @@ else:
                     tracing::error!("Initialization timed out after 2 minutes");
                     for cmd in pending_commands {
                         let ProcessCommand::Run { response_tx, .. } = cmd;
-                        let _ = response_tx.send(Err(anyhow::anyhow!("Process initialization timed out"))).await;
+                        let _ = response_tx
+                            .send(Err(anyhow::anyhow!("Process initialization timed out")))
+                            .await;
                     }
                     let _ = child.kill().await;
                     return;
@@ -209,12 +220,14 @@ else:
 
             // Process any buffered commands first
             for cmd in pending_commands {
-                Self::handle_command(cmd, &mut stdin, &mut stdout, &mut buffer, &mut temp_buf).await;
+                Self::handle_command(cmd, &mut stdin, &mut stdout, &mut buffer, &mut temp_buf)
+                    .await;
             }
 
             // Now handle commands
             while let Some(cmd) = command_rx.recv().await {
-                Self::handle_command(cmd, &mut stdin, &mut stdout, &mut buffer, &mut temp_buf).await;
+                Self::handle_command(cmd, &mut stdin, &mut stdout, &mut buffer, &mut temp_buf)
+                    .await;
             }
 
             // Cleanup: kill child process when command loop exits
@@ -237,14 +250,17 @@ else:
         use tokio::io::AsyncReadExt;
 
         match cmd {
-            ProcessCommand::Run { prompt, response_tx } => {
+            ProcessCommand::Run {
+                prompt,
+                response_tx,
+            } => {
                 tracing::trace!("Writing prompt to process stdin");
                 // 1. Write prompt to the process's stdin with bracketed paste escape sequences
                 let mut p_bytes = Vec::new();
                 p_bytes.extend_from_slice(b"\x1b[200~");
                 p_bytes.extend_from_slice(prompt.as_bytes());
                 p_bytes.extend_from_slice(b"\x1b[201~\n");
-                
+
                 if let Err(e) = stdin.write_all(&p_bytes).await {
                     tracing::error!(error = %e, "Failed to write prompt to stdin");
                     let _ = response_tx.send(Err(e.into())).await;
@@ -267,7 +283,9 @@ else:
                         Ok(0) => {
                             // EOF - process died
                             tracing::error!("Process stdout closed unexpectedly");
-                            let _ = response_tx.send(Err(anyhow::anyhow!("Process stdout closed"))).await;
+                            let _ = response_tx
+                                .send(Err(anyhow::anyhow!("Process stdout closed")))
+                                .await;
                             break;
                         }
                         Ok(n) => {
@@ -295,7 +313,11 @@ else:
                                 if final_text.len() > last_chunk.len() {
                                     let new_content = &final_text[last_chunk.len()..];
                                     if !new_content.is_empty() {
-                                        if response_tx.send(Ok(new_content.to_string())).await.is_err() {
+                                        if response_tx
+                                            .send(Ok(new_content.to_string()))
+                                            .await
+                                            .is_err()
+                                        {
                                             tracing::debug!("Response channel closed by receiver");
                                             break;
                                         }
@@ -308,7 +330,7 @@ else:
                             // Send incremental updates (holding back trailing '>' characters that might be part of the end marker)
                             if text.len() > last_chunk.len() {
                                 let mut new_content = &text[last_chunk.len()..];
-                                
+
                                 // Hold back trailing '>' characters
                                 let mut hold_back = 0;
                                 if new_content.ends_with(">>") {
@@ -316,13 +338,14 @@ else:
                                 } else if new_content.ends_with('>') {
                                     hold_back = 1;
                                 }
-                                
+
                                 if hold_back > 0 {
                                     new_content = &new_content[..new_content.len() - hold_back];
                                 }
-                                
+
                                 if !new_content.is_empty() {
-                                    if response_tx.send(Ok(new_content.to_string())).await.is_err() {
+                                    if response_tx.send(Ok(new_content.to_string())).await.is_err()
+                                    {
                                         // Client disconnected
                                         buffer.clear();
                                         break;
@@ -431,7 +454,10 @@ impl ProcessPool {
             tracing::debug!(process_index = i, "Process spawned successfully");
         }
 
-        tracing::info!(pool_size = pool_size, "Process pool initialized successfully");
+        tracing::info!(
+            pool_size = pool_size,
+            "Process pool initialized successfully"
+        );
         Ok(())
     }
 

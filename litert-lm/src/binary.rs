@@ -60,7 +60,11 @@ impl BinaryManager {
             ("linux", "x86_64") => "lit.linux_x86_64",
             ("macos", "aarch64") => "lit.macos_arm64",
             ("windows", "x86_64") => "lit.windows_x86_64.exe",
-            _ => panic!("Unsupported platform: {}/{}", env::consts::OS, env::consts::ARCH),
+            _ => panic!(
+                "Unsupported platform: {}/{}",
+                env::consts::OS,
+                env::consts::ARCH
+            ),
         }
     }
 
@@ -85,7 +89,10 @@ impl BinaryManager {
 
         tracing::debug!("Download response received, reading bytes");
         let bytes = response.bytes().await?;
-        tracing::debug!(size_bytes = bytes.len(), "Binary downloaded, writing to disk");
+        tracing::debug!(
+            size_bytes = bytes.len(),
+            "Binary downloaded, writing to disk"
+        );
 
         let mut file = tokio::fs::File::create(dest).await?;
         file.write_all(&bytes).await?;

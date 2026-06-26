@@ -30,8 +30,8 @@ fn is_dspy_request(prompt: &str) -> bool {
     // 3. "All interactions will be structured"
     // 4. "Given the fields" instruction pattern
 
-    let has_field_declaration = prompt.contains("Your input fields are:")
-        || prompt.contains("Your output fields are:");
+    let has_field_declaration =
+        prompt.contains("Your input fields are:") || prompt.contains("Your output fields are:");
     let has_field_markers = prompt.contains("[[ ## ") && prompt.contains(" ## ]]");
     let has_structure_instruction = prompt.contains("All interactions will be structured");
     let has_completion_marker = prompt.contains("[[ ## completed ## ]]")
@@ -43,7 +43,10 @@ fn is_dspy_request(prompt: &str) -> bool {
         has_field_markers,
         has_structure_instruction,
         has_completion_marker,
-    ].iter().filter(|&&x| x).count();
+    ]
+    .iter()
+    .filter(|&&x| x)
+    .count();
 
     pattern_count >= 3
 }
@@ -190,16 +193,14 @@ impl Message {
     pub fn content_as_string(&self) -> String {
         match &self.content {
             MessageContent::String(s) => s.clone(),
-            MessageContent::Parts(parts) => {
-                parts
-                    .iter()
-                    .filter_map(|part| match part {
-                        ContentPart::Text { text } => Some(text.clone()),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            }
+            MessageContent::Parts(parts) => parts
+                .iter()
+                .filter_map(|part| match part {
+                    ContentPart::Text { text } => Some(text.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
         }
     }
 }
@@ -294,7 +295,11 @@ pub async fn chat_completions(
 
         // For small models, simplify by extracting just the actual question
         if let Some(question) = extract_dspy_question(&prompt) {
-            tracing::debug!(original_length = prompt.len(), simplified_length = question.len(), "Simplified DSpy prompt for small model");
+            tracing::debug!(
+                original_length = prompt.len(),
+                simplified_length = question.len(),
+                "Simplified DSpy prompt for small model"
+            );
             prompt = question;
             tracing::trace!(simplified_prompt = %prompt, "Using simplified question");
         } else {
@@ -310,10 +315,7 @@ pub async fn chat_completions(
     tracing::debug!("Sending prompt to lit serve via manager");
     let mut response_text = match state.manager.run_completion(&req.model, &prompt).await {
         Ok(text) => {
-            tracing::info!(
-                response_length = text.len(),
-                "Received completion from LLM"
-            );
+            tracing::info!(response_length = text.len(), "Received completion from LLM");
             tracing::trace!(response = %text, "LLM response text");
             text
         }
@@ -325,7 +327,10 @@ pub async fn chat_completions(
 
     // If DSpy-rs request, format the response with field markers
     if is_dspy && !output_fields.is_empty() {
-        tracing::debug!(field_count = output_fields.len(), "Formatting response for DSpy-rs");
+        tracing::debug!(
+            field_count = output_fields.len(),
+            "Formatting response for DSpy-rs"
+        );
         response_text = format_dspy_response(&response_text, &output_fields);
         tracing::trace!(formatted_response = %response_text, "DSpy-rs formatted response");
     }
@@ -373,11 +378,17 @@ async fn chat_completions_stream(
 
         // Simplify by extracting just the actual question
         if let Some(question) = extract_dspy_question(&prompt) {
-            tracing::debug!(original_length = prompt.len(), simplified_length = question.len(), "Simplified DSpy prompt for streaming");
+            tracing::debug!(
+                original_length = prompt.len(),
+                simplified_length = question.len(),
+                "Simplified DSpy prompt for streaming"
+            );
             prompt = question;
             tracing::trace!(simplified_prompt = %prompt, "Using simplified question for streaming");
         } else {
-            tracing::warn!("Failed to extract question from DSpy prompt in streaming mode, using original");
+            tracing::warn!(
+                "Failed to extract question from DSpy prompt in streaming mode, using original"
+            );
         }
 
         fields
@@ -393,7 +404,11 @@ async fn chat_completions_stream(
     );
 
     // Stream via manager
-    let stream = match state.manager.run_completion_stream(&req.model, &prompt).await {
+    let stream = match state
+        .manager
+        .run_completion_stream(&req.model, &prompt)
+        .await
+    {
         Ok(s) => {
             tracing::debug!("Stream initialized successfully");
             s
@@ -427,31 +442,32 @@ async fn chat_completions_stream(
     use futures_util::stream;
 
     // Transform the stream to add DSpy markers if needed
-    let transformed_stream = stream::unfold((stream, state), move |(mut s, mut state)| async move {
-        match s.next().await {
-            Some(Ok(mut token)) => {
-                // For DSpy requests, wrap the first chunk with field marker
-                if state.is_dspy && !state.dspy_header_sent {
-                    if let Some(ref first_field) = state.first_field {
-                        token = format!("[[ ## {} ## ]]\n{}", first_field, token);
-                        state.dspy_header_sent = true;
+    let transformed_stream =
+        stream::unfold((stream, state), move |(mut s, mut state)| async move {
+            match s.next().await {
+                Some(Ok(mut token)) => {
+                    // For DSpy requests, wrap the first chunk with field marker
+                    if state.is_dspy && !state.dspy_header_sent {
+                        if let Some(ref first_field) = state.first_field {
+                            token = format!("[[ ## {} ## ]]\n{}", first_field, token);
+                            state.dspy_header_sent = true;
+                        }
+                    }
+
+                    Some((Ok(token), (s, state)))
+                }
+                Some(Err(e)) => Some((Err(e), (s, state))),
+                None => {
+                    // Stream ended - if DSpy and haven't sent completion, send it now
+                    if state.is_dspy && !state.completion_sent {
+                        state.completion_sent = true;
+                        Some((Ok("\n\n[[ ## completed ## ]]\n".to_string()), (s, state)))
+                    } else {
+                        None
                     }
                 }
-
-                Some((Ok(token), (s, state)))
             }
-            Some(Err(e)) => Some((Err(e), (s, state))),
-            None => {
-                // Stream ended - if DSpy and haven't sent completion, send it now
-                if state.is_dspy && !state.completion_sent {
-                    state.completion_sent = true;
-                    Some((Ok("\n\n[[ ## completed ## ]]\n".to_string()), (s, state)))
-                } else {
-                    None
-                }
-            }
-        }
-    });
+        });
 
     let mut first_chunk = true;
     let mut chunk_sent_completion = false;
@@ -493,8 +509,7 @@ async fn chat_completions_stream(
                     }],
                 };
 
-                let json_data = serde_json::to_string(&chunk)
-                    .unwrap_or_else(|_| "{}".to_string());
+                let json_data = serde_json::to_string(&chunk).unwrap_or_else(|_| "{}".to_string());
 
                 Event::default().data(json_data)
             }
@@ -574,10 +589,7 @@ pub async fn list_models(State(state): State<AppState>) -> Response {
 }
 
 // Get a specific model by ID
-pub async fn get_model(
-    State(state): State<AppState>,
-    Path(model_id): Path<String>,
-) -> Response {
+pub async fn get_model(State(state): State<AppState>, Path(model_id): Path<String>) -> Response {
     tracing::debug!(model_id = %model_id, "Looking up specific model");
 
     // Get list of locally downloaded models

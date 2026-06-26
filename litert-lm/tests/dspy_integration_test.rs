@@ -5,7 +5,6 @@
 ///
 /// Based on the example from:
 /// https://github.com/krypticmouse/DSRs/blob/main/crates/dspy-rs/examples/10-gepa-llm-judge.rs
-
 use anyhow::Result;
 use dspy_rs::*;
 use dsrs_macros::Signature;
@@ -44,9 +43,7 @@ async fn test_dspy_custom_endpoint() -> Result<()> {
     let port = 18082;
 
     // Spawn server in background
-    let server_handle = tokio::spawn(async move {
-        manager.serve(port).await
-    });
+    let server_handle = tokio::spawn(async move { manager.serve(port).await });
 
     // Give server time to start
     sleep(Duration::from_secs(3)).await;
@@ -74,14 +71,17 @@ async fn test_dspy_custom_endpoint() -> Result<()> {
     let signature = QuestionAnswer::new();
     let predictor = Predict::new(signature);
 
-    match predictor.forward_with_config(prompt.clone(), std::sync::Arc::new(lm)).await {
+    match predictor
+        .forward_with_config(prompt.clone(), std::sync::Arc::new(lm))
+        .await
+    {
         Ok(prediction) => {
             println!("✓ DSpy-rs successfully got response from our server");
             println!("Full Prediction: {:?}", prediction);
             println!("Answer field: {:?}", prediction.get("answer", None));
 
             // Also test directly with async-openai to compare
-            use async_openai::{Client, config::OpenAIConfig, types::*};
+            use async_openai::{config::OpenAIConfig, types::*, Client};
             let config = OpenAIConfig::new()
                 .with_api_base(format!("http://localhost:{}/v1", port))
                 .with_api_key("dummy-key");
@@ -126,9 +126,7 @@ async fn test_dspy_math_judge_pattern() -> Result<()> {
     let manager = LitManager::new().await?;
     let port = 18083;
 
-    let server_handle = tokio::spawn(async move {
-        manager.serve(port).await
-    });
+    let server_handle = tokio::spawn(async move { manager.serve(port).await });
 
     sleep(Duration::from_secs(3)).await;
 
@@ -155,7 +153,10 @@ async fn test_dspy_math_judge_pattern() -> Result<()> {
     let solver = Predict::new(math_signature);
 
     println!("\nSending math problem to solver...");
-    match solver.forward_with_config(math_problem, std::sync::Arc::new(solver_lm)).await {
+    match solver
+        .forward_with_config(math_problem, std::sync::Arc::new(solver_lm))
+        .await
+    {
         Ok(prediction) => {
             println!("✓ Solver responded successfully");
             println!("Answer: {:?}", prediction.get("answer", None));

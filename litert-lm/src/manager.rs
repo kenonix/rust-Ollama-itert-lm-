@@ -7,9 +7,9 @@ use tokio::sync::{Mutex, RwLock};
 use tokio_stream::Stream;
 
 use crate::binary::BinaryManager;
+use crate::native_engine::NativeEngine;
 use crate::process::ProcessPool;
 use crate::server::{create_router, AppState};
-use crate::native_engine::NativeEngine;
 
 #[derive(Debug, Clone)]
 pub struct LitManager {
@@ -84,11 +84,7 @@ impl LitManager {
 
         // 3. If not, create, initialize, and insert it
         let binary_path = self.ensure_binary().await?;
-        let mut new_pool = ProcessPool::new(
-            binary_path,
-            model.to_string(),
-            self.pool_size,
-        );
+        let mut new_pool = ProcessPool::new(binary_path, model.to_string(), self.pool_size);
 
         new_pool.initialize().await?; // Initialize *before* inserting
 
@@ -109,7 +105,7 @@ impl LitManager {
         // Try loading the library
         let lib = crate::load_native_library()
             .context("Failed to load native LiteRT-LM C++ shared library")?;
-            
+
         // Locate the model file path
         let model_path = crate::native_engine::find_model_path(model)
             .context("Failed to locate model file on disk")?;
@@ -134,13 +130,16 @@ impl LitManager {
 
     async fn ensure_server_running(&self) -> Result<()> {
         let binary_path = self.ensure_binary().await?;
-        
+
         // Check if port 9379 is listening
-        if tokio::net::TcpStream::connect("127.0.0.1:9379").await.is_ok() {
+        if tokio::net::TcpStream::connect("127.0.0.1:9379")
+            .await
+            .is_ok()
+        {
             tracing::debug!("lit serve is already running on port 9379");
             return Ok(());
         }
-        
+
         tracing::info!("Starting lit serve on port 9379...");
         let mut child = tokio::process::Command::new(&binary_path)
             .arg("serve")
@@ -150,11 +149,14 @@ impl LitManager {
             .stderr(Stdio::piped())
             .spawn()
             .context("Failed to spawn lit serve")?;
-            
+
         // Wait a bit for the server to bind and listen
         for _ in 0..20 {
             tokio::time::sleep(tokio::time::Duration::from_millis(250)).await;
-            if tokio::net::TcpStream::connect("127.0.0.1:9379").await.is_ok() {
+            if tokio::net::TcpStream::connect("127.0.0.1:9379")
+                .await
+                .is_ok()
+            {
                 tracing::info!("lit serve is now listening on port 9379");
                 // Run a background task to read output of the server process so it doesn't block
                 tokio::spawn(async move {
@@ -165,14 +167,18 @@ impl LitManager {
                             use tokio::io::AsyncReadExt;
                             let mut buf = [0u8; 1024];
                             while let Ok(n) = stdout.read(&mut buf).await {
-                                if n == 0 { break; }
+                                if n == 0 {
+                                    break;
+                                }
                             }
                         },
                         async {
                             use tokio::io::AsyncReadExt;
                             let mut buf = [0u8; 1024];
                             while let Ok(n) = stderr.read(&mut buf).await {
-                                if n == 0 { break; }
+                                if n == 0 {
+                                    break;
+                                }
                             }
                         }
                     );
@@ -181,7 +187,7 @@ impl LitManager {
                 return Ok(());
             }
         }
-        
+
         anyhow::bail!("lit serve failed to start on port 9379")
     }
 
@@ -209,7 +215,8 @@ impl LitManager {
                 match native_engine.run_completion_stream(prompt) {
                     Ok(native_stream) => {
                         use futures_util::StreamExt;
-                        let mapped_stream = native_stream.map(|item| item.map_err(anyhow::Error::from));
+                        let mapped_stream =
+                            native_stream.map(|item| item.map_err(anyhow::Error::from));
                         return Ok(Box::pin(mapped_stream));
                     }
                     Err(e) => {
@@ -218,24 +225,25 @@ impl LitManager {
                 }
             }
             Err(e) => {
-                tracing::info!("Native engine not available: {}. Falling back to CLI mode.", e);
+                tracing::info!(
+                    "Native engine not available: {}. Falling back to CLI mode.",
+                    e
+                );
             }
         }
 
         tracing::debug!(model = %model, prompt_length = prompt.len(), "Running single-shot GPU completion stream (CLI fallback)");
 
         let binary_path = self.ensure_binary().await?;
-        // lit CLI only accepts registry/cache model IDs (e.g. "gemma-4-E2B-it"),
-        // NOT file paths. Always strip .litertlm extension to get the bare ID.
-        let model_id = model.strip_suffix(".litertlm").unwrap_or(model);
-        println!("[디버그] 모델 레지스트리 ID: {} (원본: {})", model_id, model);
+        let model_arg = crate::native_engine::resolve_model_argument(model);
+        println!("[디버그] lit 실행 인자: {} (원본: {})", model_arg, model);
 
         // Standardize the prompt to single-line by replacing newlines with spaces
         let single_line_prompt = prompt.replace('\r', "").replace('\n', " ");
 
         let mut child = tokio::process::Command::new(&binary_path)
             .arg("run")
-            .arg(&model_id)
+            .arg(&model_arg)
             .arg("--backend")
             .arg("gpu")
             .stdin(Stdio::piped())
@@ -244,37 +252,49 @@ impl LitManager {
             .spawn()
             .context("Failed to spawn lit process")?;
 
-        let mut stdin = child.stdin.take().ok_or_else(|| anyhow::anyhow!("Failed to open stdin"))?;
-        
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("Failed to open stdin"))?;
+
         // Write prompt and close stdin to signal EOF
         use tokio::io::AsyncWriteExt;
-        stdin.write_all(single_line_prompt.as_bytes()).await.context("Failed to write to stdin")?;
-        stdin.write_all(b"\n").await.context("Failed to write newline to stdin")?;
+        stdin
+            .write_all(single_line_prompt.as_bytes())
+            .await
+            .context("Failed to write to stdin")?;
+        stdin
+            .write_all(b"\n")
+            .await
+            .context("Failed to write newline to stdin")?;
         drop(stdin);
 
-        let stdout = child.stdout.take().ok_or_else(|| anyhow::anyhow!("Failed to open stdout"))?;
-        
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("Failed to open stdout"))?;
+
         use futures_util::StreamExt;
         use tokio_util::codec::LinesCodec;
-        
+
         let mut framed = tokio_util::codec::FramedRead::new(stdout, LinesCodec::new());
 
         let out_stream = async_stream::try_stream! {
             let mut header_seen = false;
             while let Some(line_res) = framed.next().await {
                 let line = line_res.context("Failed to read line from process")?;
-                
+
                 if !header_seen {
                     if line.contains("loaded. Start chatting") {
                         header_seen = true;
                     }
                     continue;
                 }
-                
+
                 if line.trim() == "Exiting." {
                     break;
                 }
-                
+
                 // Yield the response line.
                 yield format!("{}\n", line);
             }
@@ -336,7 +356,12 @@ impl LitManager {
         self.run_lit_command(&binary_path, &args)
     }
 
-    pub async fn pull(&self, model: &str, alias: Option<&str>, hf_token: Option<&str>) -> Result<()> {
+    pub async fn pull(
+        &self,
+        model: &str,
+        alias: Option<&str>,
+        hf_token: Option<&str>,
+    ) -> Result<()> {
         let binary_path = self.ensure_binary().await?;
         tracing::info!("Pulling model: {}", model);
 
@@ -466,8 +491,14 @@ impl LitManager {
     }
 
     /// Pull a model without writing to stdout (for library/MCP usage) - simple version
-    pub async fn pull_quiet(&self, model: &str, alias: Option<&str>, hf_token: Option<&str>) -> Result<String> {
-        self.pull_with_progress(model, alias, hf_token, |_| {}).await
+    pub async fn pull_quiet(
+        &self,
+        model: &str,
+        alias: Option<&str>,
+        hf_token: Option<&str>,
+    ) -> Result<String> {
+        self.pull_with_progress(model, alias, hf_token, |_| {})
+            .await
     }
 
     pub async fn remove(&self, model: &str) -> Result<()> {
@@ -514,12 +545,15 @@ impl LitManager {
         tracing::info!("Binary ready at: {}", binary_path.display());
 
         // Default model for initialization - pool will be created on-demand
-        let model = std::env::var("LITERT_MODEL")
-            .unwrap_or_else(|_| "gemma-3n-E4B".to_string());
+        let model = std::env::var("LITERT_MODEL").unwrap_or_else(|_| "gemma-3n-E4B".to_string());
 
         // Pre-initialize pool for default model
         let pool = self.get_pool(&model).await?;
-        tracing::info!("Process pool initialized for model '{}' with {} instances", model, self.pool_size);
+        tracing::info!(
+            "Process pool initialized for model '{}' with {} instances",
+            model,
+            self.pool_size
+        );
 
         // Start server - AppState holds both pool and manager
         let app_state = AppState {
@@ -533,11 +567,12 @@ impl LitManager {
             .context("Failed to bind to port")?;
 
         tracing::info!("Server listening on http://0.0.0.0:{}", port);
-        tracing::info!("OpenAI-compatible endpoint: http://localhost:{}/v1/chat/completions", port);
+        tracing::info!(
+            "OpenAI-compatible endpoint: http://localhost:{}/v1/chat/completions",
+            port
+        );
 
-        axum::serve(listener, app)
-            .await
-            .context("Server error")?;
+        axum::serve(listener, app).await.context("Server error")?;
 
         Ok(())
     }

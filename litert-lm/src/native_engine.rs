@@ -1,4 +1,4 @@
-use std::ffi::{CString, c_void};
+use std::ffi::{c_void, CString};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -35,7 +35,10 @@ impl NativeEngine {
                 std::ptr::null(), // audio_backend
             );
             if settings.is_null() {
-                anyhow::bail!("Failed to create LiteRT-LM engine settings for model: {}", model_path_str);
+                anyhow::bail!(
+                    "Failed to create LiteRT-LM engine settings for model: {}",
+                    model_path_str
+                );
             }
 
             // Default max tokens
@@ -118,7 +121,9 @@ impl NativeEngine {
                     if let Ok(err_cstr) = std::ffi::CStr::from_ptr(error_msg).to_str() {
                         let _ = tx.blocking_send(Err(anyhow::anyhow!("{}", err_cstr)));
                     } else {
-                        let _ = tx.blocking_send(Err(anyhow::anyhow!("Unknown error in LiteRT-LM C++ stream")));
+                        let _ = tx.blocking_send(Err(anyhow::anyhow!(
+                            "Unknown error in LiteRT-LM C++ stream"
+                        )));
                     }
                     // Reclaim ownership to free the channel sender Box
                     let _ = Box::from_raw(callback_data as *mut ChanSender);
@@ -138,11 +143,15 @@ impl NativeEngine {
             }
 
             // 3. Start asynchronous decode
-            let decode_res = (self.lib.session_run_decode_async)(self.session, raw_callback, tx_ptr);
+            let decode_res =
+                (self.lib.session_run_decode_async)(self.session, raw_callback, tx_ptr);
             if decode_res != 0 {
                 // Clean up the leaked box if decode starting failed
                 let _ = Box::from_raw(tx_ptr as *mut ChanSender);
-                anyhow::bail!("LiteRT-LM decode stream failed to start with code: {}", decode_res);
+                anyhow::bail!(
+                    "LiteRT-LM decode stream failed to start with code: {}",
+                    decode_res
+                );
             }
 
             Ok(NativeCompletionStream {
@@ -196,7 +205,32 @@ impl Drop for NativeCompletionStream {
     }
 }
 
-/// Utility function to locate the model path.
+fn collect_candidate_model_paths(model_name: &str, home: &Path) -> Vec<PathBuf> {
+    let model_id = model_name.strip_suffix(".litertlm").unwrap_or(model_name);
+    let mut candidates = vec![PathBuf::from(model_name)];
+
+    if model_name.ends_with(".litertlm") {
+        candidates.push(PathBuf::from(model_id));
+    } else {
+        candidates.push(PathBuf::from(format!("{model_name}.litertlm")));
+    }
+
+    let litert_models = home.join(".litert-lm/models");
+    candidates.push(litert_models.join(model_name));
+    candidates.push(litert_models.join(format!("{model_id}.litertlm")));
+
+    let cache_dir = home.join(".cache/litert-lm");
+    candidates.push(cache_dir.join(model_name));
+    candidates.push(cache_dir.join(format!("{model_id}.litertlm")));
+
+    let mais_dir = home.join("mais");
+    candidates.push(mais_dir.join(model_name));
+    candidates.push(mais_dir.join(format!("{model_id}.litertlm")));
+
+    candidates
+}
+
+/// Return the best local model path for a provided model identifier.
 pub fn find_model_path(model_name: &str) -> anyhow::Result<PathBuf> {
     let path = Path::new(model_name);
     if path.exists() {
@@ -204,43 +238,44 @@ pub fn find_model_path(model_name: &str) -> anyhow::Result<PathBuf> {
     }
 
     let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
-    
-    // Check ~/.litert-lm/models/
-    let litert_models = home.join(".litert-lm/models");
-    let candidate1 = litert_models.join(model_name);
-    if candidate1.exists() {
-        return Ok(candidate1);
-    }
-    
-    let candidate2 = litert_models.join(format!("{}.litertlm", model_name));
-    if candidate2.exists() {
-        return Ok(candidate2);
+    let candidates = collect_candidate_model_paths(model_name, &home);
+
+    for candidate in &candidates {
+        if candidate.exists() {
+            return Ok(candidate.clone());
+        }
     }
 
-    // Check ~/.cache/litert-lm/
-    let cache_dir = home.join(".cache/litert-lm");
-    let candidate3 = cache_dir.join(model_name);
-    if candidate3.exists() {
-        return Ok(candidate3);
-    }
-
-    let candidate4 = cache_dir.join(format!("{}.litertlm", model_name));
-    if candidate4.exists() {
-        return Ok(candidate4);
-    }
+    let candidate_list = candidates
+        .iter()
+        .map(|candidate| format!("- {}", candidate.display()))
+        .collect::<Vec<_>>()
+        .join("\n");
 
     anyhow::bail!(
-        "Model '{}' not found in candidate paths:\n\
-         - {}\n\
-         - {}\n\
-         - {}\n\
-         - {}",
+        "Model '{}' not found in candidate paths:\n{}",
         model_name,
-        candidate1.display(),
-        candidate2.display(),
-        candidate3.display(),
-        candidate4.display()
+        candidate_list
     )
+}
+
+/// Resolve a model identifier to the most suitable value for the lit CLI.
+pub fn resolve_model_argument(model_name: &str) -> String {
+    if let Some(home) = dirs::home_dir() {
+        if let Some(path) = collect_candidate_model_paths(model_name, &home)
+            .into_iter()
+            .find(|candidate| candidate.exists())
+        {
+            return path.to_string_lossy().into_owned();
+        }
+    } else if Path::new(model_name).exists() {
+        return model_name.to_string();
+    }
+
+    model_name
+        .strip_suffix(".litertlm")
+        .unwrap_or(model_name)
+        .to_string()
 }
 
 impl std::fmt::Debug for NativeEngine {
@@ -260,3 +295,36 @@ impl std::fmt::Debug for NativeCompletionStream {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::find_model_path;
+    use std::env;
+    use std::fs;
+    use std::path::PathBuf;
+
+    #[test]
+    fn find_model_path_recognizes_models_in_home_mais_directory() {
+        let temp_home = env::temp_dir().join(format!("litert-lm-test-{}", std::process::id()));
+        let model_dir = temp_home.join("mais");
+        fs::create_dir_all(&model_dir).unwrap();
+
+        let model_path = model_dir.join("demo-model.litertlm");
+        fs::write(&model_path, b"fake").unwrap();
+
+        let previous_home = env::var_os("HOME");
+        env::set_var("HOME", &temp_home);
+
+        let result = find_model_path("demo-model.litertlm");
+
+        if let Some(previous_home) = previous_home {
+            env::set_var("HOME", previous_home);
+        } else {
+            env::remove_var("HOME");
+        }
+
+        let found_path = result.expect("expected the model to be discovered");
+        assert_eq!(found_path, PathBuf::from(&model_path));
+
+        let _ = fs::remove_dir_all(&temp_home);
+    }
+}

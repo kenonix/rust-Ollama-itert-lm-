@@ -64,7 +64,13 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     // Configure tracing based on command - for MCP stdio, write to stderr to avoid polluting stdout
-    let use_stderr = matches!(cli.command, Commands::Mcp { transport: McpTransport::Stdio, .. });
+    let use_stderr = matches!(
+        cli.command,
+        Commands::Mcp {
+            transport: McpTransport::Stdio,
+            ..
+        }
+    );
 
     if use_stderr {
         tracing_subscriber::fmt()
@@ -77,25 +83,27 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::List { show_all } => manager.list(show_all).await?,
-        Commands::Pull { model, alias, hf_token } => manager.pull(&model, alias.as_deref(), hf_token.as_deref()).await?,
+        Commands::Pull {
+            model,
+            alias,
+            hf_token,
+        } => {
+            manager
+                .pull(&model, alias.as_deref(), hf_token.as_deref())
+                .await?
+        }
         Commands::Rm { model } => manager.remove(&model).await?,
         Commands::Run { model } => manager.run_interactive(&model).await?,
         Commands::Completion { shell } => manager.generate_completion(&shell)?,
         Commands::Serve { port } => manager.serve(port).await?,
-        Commands::Mcp { transport, port } => {
-            run_mcp_server(manager, transport, port).await?
-        }
+        Commands::Mcp { transport, port } => run_mcp_server(manager, transport, port).await?,
     }
 
     Ok(())
 }
 
-async fn run_mcp_server(
-    manager: LitManager,
-    transport: McpTransport,
-    port: u16,
-) -> Result<()> {
-    use rmcp::{ServiceExt, transport::stdio};
+async fn run_mcp_server(manager: LitManager, transport: McpTransport, port: u16) -> Result<()> {
+    use rmcp::{transport::stdio, ServiceExt};
 
     let service = LiteRtMcpService::new(manager).await?;
 
@@ -121,7 +129,8 @@ async fn run_mcp_server(
             };
 
             // Start SSE server
-            let sse_server = rmcp::transport::sse_server::SseServer::serve_with_config(config).await?;
+            let sse_server =
+                rmcp::transport::sse_server::SseServer::serve_with_config(config).await?;
 
             // Serve with the service
             let _ct = sse_server.with_service_directly(move || service.clone());

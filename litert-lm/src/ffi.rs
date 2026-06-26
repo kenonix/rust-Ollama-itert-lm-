@@ -1,5 +1,5 @@
-use std::ffi::{c_char, c_int, c_void};
 use libloading::Library;
+use std::ffi::{c_char, c_int, c_void};
 
 #[repr(C)]
 pub struct LiteRtLmEngineSettings {
@@ -55,21 +55,16 @@ pub struct LibLiteRtLm {
         audio_backend_str: *const c_char,
     ) -> *mut LiteRtLmEngineSettings,
     pub engine_settings_delete: unsafe extern "C" fn(settings: *mut LiteRtLmEngineSettings),
-    pub engine_settings_set_max_num_tokens: unsafe extern "C" fn(
-        settings: *mut LiteRtLmEngineSettings,
-        max_num_tokens: c_int,
-    ),
-    pub engine_settings_set_num_threads: unsafe extern "C" fn(
-        settings: *mut LiteRtLmEngineSettings,
-        num_threads: c_int,
-    ),
-    pub engine_create: unsafe extern "C" fn(settings: *const LiteRtLmEngineSettings) -> *mut LiteRtLmEngine,
+    pub engine_settings_set_max_num_tokens:
+        unsafe extern "C" fn(settings: *mut LiteRtLmEngineSettings, max_num_tokens: c_int),
+    pub engine_settings_set_num_threads:
+        unsafe extern "C" fn(settings: *mut LiteRtLmEngineSettings, num_threads: c_int),
+    pub engine_create:
+        unsafe extern "C" fn(settings: *const LiteRtLmEngineSettings) -> *mut LiteRtLmEngine,
     pub engine_delete: unsafe extern "C" fn(engine: *mut LiteRtLmEngine),
     pub session_config_create: unsafe extern "C" fn() -> *mut LiteRtLmSessionConfig,
-    pub session_config_set_max_output_tokens: unsafe extern "C" fn(
-        config: *mut LiteRtLmSessionConfig,
-        max_output_tokens: c_int,
-    ),
+    pub session_config_set_max_output_tokens:
+        unsafe extern "C" fn(config: *mut LiteRtLmSessionConfig, max_output_tokens: c_int),
     pub session_config_delete: unsafe extern "C" fn(config: *mut LiteRtLmSessionConfig),
     pub engine_create_session: unsafe extern "C" fn(
         engine: *mut LiteRtLmEngine,
@@ -96,12 +91,15 @@ impl LibLiteRtLm {
         let set_min_log_level = *lib.get(b"litert_lm_set_min_log_level")?;
         let engine_settings_create = *lib.get(b"litert_lm_engine_settings_create")?;
         let engine_settings_delete = *lib.get(b"litert_lm_engine_settings_delete")?;
-        let engine_settings_set_max_num_tokens = *lib.get(b"litert_lm_engine_settings_set_max_num_tokens")?;
-        let engine_settings_set_num_threads = *lib.get(b"litert_lm_engine_settings_set_num_threads")?;
+        let engine_settings_set_max_num_tokens =
+            *lib.get(b"litert_lm_engine_settings_set_max_num_tokens")?;
+        let engine_settings_set_num_threads =
+            *lib.get(b"litert_lm_engine_settings_set_num_threads")?;
         let engine_create = *lib.get(b"litert_lm_engine_create")?;
         let engine_delete = *lib.get(b"litert_lm_engine_delete")?;
         let session_config_create = *lib.get(b"litert_lm_session_config_create")?;
-        let session_config_set_max_output_tokens = *lib.get(b"litert_lm_session_config_set_max_output_tokens")?;
+        let session_config_set_max_output_tokens =
+            *lib.get(b"litert_lm_session_config_set_max_output_tokens")?;
         let session_config_delete = *lib.get(b"litert_lm_session_config_delete")?;
         let engine_create_session = *lib.get(b"litert_lm_engine_create_session")?;
         let session_delete = *lib.get(b"litert_lm_session_delete")?;

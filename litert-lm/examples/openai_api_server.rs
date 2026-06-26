@@ -18,7 +18,9 @@ async fn main() -> Result<()> {
     println!("Example curl command:");
     println!(r#"  curl http://localhost:8080/v1/chat/completions \"#);
     println!(r#"    -H "Content-Type: application/json" \"#);
-    println!(r#"    -d '{{"model":"gemma-3n-E4B","messages":[{{"role":"user","content":"Hello!"}}]}}'"#);
+    println!(
+        r#"    -d '{{"model":"gemma-3n-E4B","messages":[{{"role":"user","content":"Hello!"}}]}}'"#
+    );
     println!();
 
     // Set the model to use (optional, defaults to gemma-3n-E4B)

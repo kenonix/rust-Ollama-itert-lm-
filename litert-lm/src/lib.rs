@@ -38,9 +38,9 @@ pub mod server;
 // Re-export main types for library users
 pub use manager::LitManager;
 pub use mcp::LiteRtMcpService;
-pub use native_engine::{NativeEngine, NativeCompletionStream, find_model_path};
+pub use native_engine::{find_model_path, NativeCompletionStream, NativeEngine};
 pub use process::{LitProcess, ProcessPool};
-pub use server::{AppState, ChatCompletionRequest, create_router};
+pub use server::{create_router, AppState, ChatCompletionRequest};
 
 // Re-export common types
 pub type Result<T> = std::result::Result<T, anyhow::Error>;
@@ -48,7 +48,7 @@ pub type Result<T> = std::result::Result<T, anyhow::Error>;
 /// Helper to load the native LiteRT-LM C library from the standard path.
 pub fn load_native_library() -> Result<ffi::LibLiteRtLm> {
     let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
-    
+
     // Support both .so (Linux) and .dylib (macOS)
     let lib_name = if cfg!(target_os = "macos") {
         "liblitert-lm.dylib"
@@ -57,9 +57,9 @@ pub fn load_native_library() -> Result<ffi::LibLiteRtLm> {
     } else {
         "liblitert-lm.so"
     };
-    
+
     let lib_path = home.join(".cache/litert-lm/lib").join(lib_name);
-    
+
     if !lib_path.exists() {
         return Err(anyhow::anyhow!(
             "Native LiteRT-LM shared library not found at: {}\n\
@@ -67,6 +67,9 @@ pub fn load_native_library() -> Result<ffi::LibLiteRtLm> {
             lib_path.display()
         ));
     }
-    
-    unsafe { ffi::LibLiteRtLm::load(&lib_path).map_err(|e| anyhow::anyhow!("Failed to load native library: {}", e)) }
+
+    unsafe {
+        ffi::LibLiteRtLm::load(&lib_path)
+            .map_err(|e| anyhow::anyhow!("Failed to load native library: {}", e))
+    }
 }

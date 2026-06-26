@@ -8,7 +8,6 @@
 ///
 /// The DSpy-rs framework uses async-openai internally, so if this test passes,
 /// it means DSpy-rs and similar frameworks can use our server as a drop-in replacement.
-
 use async_openai::{
     config::OpenAIConfig,
     types::{
@@ -31,9 +30,7 @@ async fn test_openai_client_compatibility() -> Result<()> {
     let port = 18080; // Use a different port for testing
 
     // Spawn server in background
-    let server_handle = tokio::spawn(async move {
-        manager.serve(port).await
-    });
+    let server_handle = tokio::spawn(async move { manager.serve(port).await });
 
     // Give server time to start
     sleep(Duration::from_secs(2)).await;
@@ -65,7 +62,10 @@ async fn test_openai_client_compatibility() -> Result<()> {
 
     let response = client.chat().create(request).await?;
     println!("Response: {:?}", response.choices[0].message.content);
-    assert!(!response.choices.is_empty(), "Should have at least one choice");
+    assert!(
+        !response.choices.is_empty(),
+        "Should have at least one choice"
+    );
 
     // Test 3: Chat completion with system prompt
     println!("\nTesting /v1/chat/completions with system prompt...");
@@ -87,8 +87,14 @@ async fn test_openai_client_compatibility() -> Result<()> {
         .build()?;
 
     let response = client.chat().create(request).await?;
-    println!("Math tutor response: {:?}", response.choices[0].message.content);
-    assert!(!response.choices.is_empty(), "Should have at least one choice");
+    println!(
+        "Math tutor response: {:?}",
+        response.choices[0].message.content
+    );
+    assert!(
+        !response.choices.is_empty(),
+        "Should have at least one choice"
+    );
 
     // Test 4: Streaming (if supported by async-openai)
     println!("\nTesting /v1/chat/completions (streaming)...");
@@ -136,9 +142,7 @@ async fn test_get_specific_model() -> Result<()> {
     let manager = LitManager::new().await?;
     let port = 18081;
 
-    let server_handle = tokio::spawn(async move {
-        manager.serve(port).await
-    });
+    let server_handle = tokio::spawn(async move { manager.serve(port).await });
 
     sleep(Duration::from_secs(2)).await;
 

@@ -2,12 +2,13 @@ use anyhow::Result;
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{ErrorData as McpError, *},
-    schemars, tool, tool_handler, tool_router, ServerHandler,
-    service::{RequestContext, Peer}, RoleServer,
+    schemars,
+    service::{Peer, RequestContext},
+    tool, tool_handler, tool_router, RoleServer, ServerHandler,
 };
 use serde::{Deserialize, Serialize};
 use std::{borrow::Cow, collections::HashMap, sync::Arc};
-use tokio::sync::{RwLock, Mutex};
+use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
 use crate::manager::LitManager;
@@ -57,7 +58,9 @@ pub struct ListModelsRequest {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct PullModelRequest {
-    #[schemars(description = "The model name or URL to download (e.g., 'gemma-3n-E4B' or Hugging Face URL)")]
+    #[schemars(
+        description = "The model name or URL to download (e.g., 'gemma-3n-E4B' or Hugging Face URL)"
+    )]
     pub model: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schemars(description = "Alias to save the model as (only for URLs)")]
@@ -105,7 +108,10 @@ impl LiteRtMcpService {
         tracing::info!("Initializing MCP service, loading model registry...");
         // Initialize download progress from model registry
         let download_progress = Self::initialize_model_registry(manager_arc.clone()).await?;
-        tracing::info!("Model registry loaded with {} models", download_progress.len());
+        tracing::info!(
+            "Model registry loaded with {} models",
+            download_progress.len()
+        );
 
         Ok(Self {
             manager: manager_arc,
@@ -116,7 +122,9 @@ impl LiteRtMcpService {
     }
 
     /// Initialize model registry by listing all available models
-    async fn initialize_model_registry(manager: Arc<LitManager>) -> Result<HashMap<String, DownloadProgress>> {
+    async fn initialize_model_registry(
+        manager: Arc<LitManager>,
+    ) -> Result<HashMap<String, DownloadProgress>> {
         let binary_path = manager.ensure_binary_path().await?;
 
         // Get list of all models in registry
@@ -141,7 +149,8 @@ impl LiteRtMcpService {
             if trimmed.is_empty()
                 || trimmed.starts_with("Available")
                 || trimmed.starts_with("Downloaded")
-                || trimmed.starts_with("ALIAS") {
+                || trimmed.starts_with("ALIAS")
+            {
                 continue;
             }
 
@@ -157,11 +166,14 @@ impl LiteRtMcpService {
                     DownloadStatus::Pending
                 };
 
-                progress_map.insert(model_name.to_string(), DownloadProgress {
-                    model: model_name.to_string(),
-                    progress: if is_downloaded { 100 } else { 0 },
-                    status,
-                });
+                progress_map.insert(
+                    model_name.to_string(),
+                    DownloadProgress {
+                        model: model_name.to_string(),
+                        progress: if is_downloaded { 100 } else { 0 },
+                        status,
+                    },
+                );
             }
         }
 
@@ -191,11 +203,14 @@ impl LiteRtMcpService {
     async fn update_progress(&self, model: String, progress: u8, status: DownloadStatus) {
         // Update the progress
         let mut downloads = self.download_progress.write().await;
-        downloads.insert(model.clone(), DownloadProgress {
-            model: model.clone(),
-            progress,
-            status,
-        });
+        downloads.insert(
+            model.clone(),
+            DownloadProgress {
+                model: model.clone(),
+                progress,
+                status,
+            },
+        );
         drop(downloads);
 
         // Notify all subscribers
@@ -224,10 +239,17 @@ impl LiteRtMcpService {
 
                 // Spawn notification task to avoid blocking
                 tokio::spawn(async move {
-                    if let Err(e) = peer_clone.notify_resource_updated(ResourceUpdatedNotificationParam {
-                        uri: uri_clone.clone(),
-                    }).await {
-                        tracing::debug!("Failed to notify peer about resource {}: {}", uri_clone, e);
+                    if let Err(e) = peer_clone
+                        .notify_resource_updated(ResourceUpdatedNotificationParam {
+                            uri: uri_clone.clone(),
+                        })
+                        .await
+                    {
+                        tracing::debug!(
+                            "Failed to notify peer about resource {}: {}",
+                            uri_clone,
+                            e
+                        );
                     }
                 });
             }
@@ -242,14 +264,19 @@ impl LiteRtMcpService {
                 subscriptions.remove(uri);
                 tracing::debug!("Removed empty subscription for: {}", uri);
             } else if !failed_indices.is_empty() {
-                tracing::info!("Cleaned up {} disconnected peer(s) from resource: {}", failed_indices.len(), uri);
+                tracing::info!(
+                    "Cleaned up {} disconnected peer(s) from resource: {}",
+                    failed_indices.len(),
+                    uri
+                );
             }
         }
     }
 
-
     /// List all locally downloaded LiteRT models
-    #[tool(description = "List all locally downloaded LiteRT models (or all available with show_all=true)")]
+    #[tool(
+        description = "List all locally downloaded LiteRT models (or all available with show_all=true)"
+    )]
     async fn list_models(
         &self,
         Parameters(request): Parameters<ListModelsRequest>,
@@ -260,7 +287,9 @@ impl LiteRtMcpService {
         let result = tokio::task::spawn_blocking(move || {
             tokio::runtime::Handle::current().block_on(async move {
                 // Use the binary to list models
-                let binary_path = manager.ensure_binary_path().await
+                let binary_path = manager
+                    .ensure_binary_path()
+                    .await
                     .map_err(|e| format!("Failed to get binary: {}", e))?;
 
                 let mut cmd = std::process::Command::new(&binary_path);
@@ -303,7 +332,8 @@ impl LiteRtMcpService {
         let hf_token = request.hf_token.clone();
 
         // Initialize progress
-        self.update_progress(model.clone(), 0, DownloadStatus::Pending).await;
+        self.update_progress(model.clone(), 0, DownloadStatus::Pending)
+            .await;
 
         // Use real progress tracking from lit binary with channel
         let progress_tracker = self.clone();
@@ -322,21 +352,20 @@ impl LiteRtMcpService {
                 } else {
                     DownloadStatus::Pending
                 };
-                progress_tracker.update_progress(progress_model.clone(), pct as u8, status).await;
+                progress_tracker
+                    .update_progress(progress_model.clone(), pct as u8, status)
+                    .await;
             }
         });
 
-        let result = manager.pull_with_progress(
-            &model,
-            alias.as_deref(),
-            hf_token.as_deref(),
-            {
+        let result = manager
+            .pull_with_progress(&model, alias.as_deref(), hf_token.as_deref(), {
                 let tx = tx.clone();
                 move |pct| {
                     let _ = tx.send(pct);
                 }
-            }
-        ).await;
+            })
+            .await;
 
         // Clean up - drop the original sender to signal completion
         drop(tx);
@@ -344,7 +373,8 @@ impl LiteRtMcpService {
 
         match result {
             Ok(output) => {
-                self.update_progress(request.model.clone(), 100, DownloadStatus::Complete).await;
+                self.update_progress(request.model.clone(), 100, DownloadStatus::Complete)
+                    .await;
                 Ok(CallToolResult::success(vec![Content::text(format!(
                     "Successfully pulled model: {}\n\n{}\n\nCheck litert://downloads/{} for progress.",
                     request.model, output.trim(), request.model
@@ -354,8 +384,9 @@ impl LiteRtMcpService {
                 self.update_progress(
                     request.model.clone(),
                     0,
-                    DownloadStatus::Failed(e.to_string())
-                ).await;
+                    DownloadStatus::Failed(e.to_string()),
+                )
+                .await;
                 Err(McpError {
                     code: ErrorCode(-32603),
                     message: Cow::from(format!("Failed to pull model: {}", e)),
@@ -391,7 +422,8 @@ impl LiteRtMcpService {
 
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Successfully removed model: {}\n\n{}",
-            request.model, output.trim()
+            request.model,
+            output.trim()
         ))]))
     }
 
@@ -407,7 +439,9 @@ impl LiteRtMcpService {
 
         let result = tokio::task::spawn_blocking(move || {
             tokio::runtime::Handle::current().block_on(async move {
-                manager.run_completion(&model, &prompt).await
+                manager
+                    .run_completion(&model, &prompt)
+                    .await
                     .map_err(|e| format!("Failed to run completion: {}", e))
             })
         })
@@ -510,14 +544,12 @@ impl ServerHandler for LiteRtMcpService {
     ) -> Result<ReadResourceResult, McpError> {
         // Extract model name from URI: litert://downloads/{model}
         let uri_str = uri.as_str();
-        let model = uri_str
-            .strip_prefix("litert://downloads/")
-            .ok_or_else(|| {
-                McpError::resource_not_found(
-                    "Invalid resource URI",
-                    Some(serde_json::json!({"uri": uri_str})),
-                )
-            })?;
+        let model = uri_str.strip_prefix("litert://downloads/").ok_or_else(|| {
+            McpError::resource_not_found(
+                "Invalid resource URI",
+                Some(serde_json::json!({"uri": uri_str})),
+            )
+        })?;
 
         let downloads = self.download_progress.read().await;
         let progress = downloads.get(model).ok_or_else(|| {
@@ -566,7 +598,8 @@ impl ServerHandler for LiteRtMcpService {
         }
 
         // Extract model name
-        let model = uri.strip_prefix("litert://downloads/")
+        let model = uri
+            .strip_prefix("litert://downloads/")
             .ok_or_else(|| McpError {
                 code: ErrorCode(-32602),
                 message: Cow::from("Invalid resource URI format"),
@@ -602,8 +635,12 @@ impl ServerHandler for LiteRtMcpService {
         let subscriber_count = subscribers.len();
         drop(subscriptions); // Release lock before spawning task
 
-        tracing::info!("Client subscribed to resource: {} (total subscribers: {}, id: {})",
-            uri, subscriber_count, subscription_id);
+        tracing::info!(
+            "Client subscribed to resource: {} (total subscribers: {}, id: {})",
+            uri,
+            subscriber_count,
+            subscription_id
+        );
 
         // CRITICAL: Spawn cleanup task to remove peer when it disconnects
         let subscriptions_clone = self.subscriptions.clone();
@@ -615,8 +652,11 @@ impl ServerHandler for LiteRtMcpService {
                 tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
             }
 
-            tracing::info!("Client disconnected, cleaning up subscription to: {} (id: {})",
-                uri_clone, subscription_id);
+            tracing::info!(
+                "Client disconnected, cleaning up subscription to: {} (id: {})",
+                uri_clone,
+                subscription_id
+            );
 
             // Lock the map and remove this specific peer by ID
             let mut subs = subscriptions_clone.lock().await;
@@ -629,8 +669,12 @@ impl ServerHandler for LiteRtMcpService {
                 let after_count = peers.len();
 
                 if before_count > after_count {
-                    tracing::info!("Removed disconnected peer {} from resource: {} ({} subscribers remaining)",
-                        subscription_id, uri_clone, after_count);
+                    tracing::info!(
+                        "Removed disconnected peer {} from resource: {} ({} subscribers remaining)",
+                        subscription_id,
+                        uri_clone,
+                        after_count
+                    );
                 }
 
                 // Remove empty entries
@@ -665,9 +709,16 @@ impl ServerHandler for LiteRtMcpService {
                 subscriptions.remove(&uri);
             }
 
-            tracing::info!("Client unsubscribed from resource: {} (removed {} subscribers)", uri, original_len);
+            tracing::info!(
+                "Client unsubscribed from resource: {} (removed {} subscribers)",
+                uri,
+                original_len
+            );
         } else {
-            tracing::warn!("Client attempted to unsubscribe from non-subscribed resource: {}", uri);
+            tracing::warn!(
+                "Client attempted to unsubscribe from non-subscribed resource: {}",
+                uri
+            );
         }
 
         Ok(())
