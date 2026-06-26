@@ -1,4 +1,5 @@
 use std::ffi::{c_void, CString};
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -227,7 +228,47 @@ fn collect_candidate_model_paths(model_name: &str, home: &Path) -> Vec<PathBuf> 
     candidates.push(mais_dir.join(model_name));
     candidates.push(mais_dir.join(format!("{model_id}.litertlm")));
 
+    let home_gits_mais = home.join("gits/mais");
+    candidates.push(home_gits_mais.join(model_name));
+    candidates.push(home_gits_mais.join(format!("{model_id}.litertlm")));
+
+    if let Ok(current_dir) = std::env::current_dir() {
+        for ancestor in current_dir.ancestors() {
+            let ancestor_mais = ancestor.join("mais");
+            candidates.push(ancestor_mais.join(model_name));
+            candidates.push(ancestor_mais.join(format!("{model_id}.litertlm")));
+        }
+    }
+
     candidates
+}
+
+fn stage_model_for_lit_cli(
+    local_model_path: &Path,
+    model_name: &str,
+    home: &Path,
+) -> Option<String> {
+    let cache_dir = home.join(".cache/litert-lm");
+    if let Err(err) = fs::create_dir_all(&cache_dir) {
+        tracing::warn!(path = %cache_dir.display(), error = %err, "Failed to create lit cache directory");
+        return None;
+    }
+
+    let target_name = if model_name.ends_with(".litertlm") {
+        model_name.to_string()
+    } else {
+        format!("{model_name}.litertlm")
+    };
+
+    let staged_path = cache_dir.join(&target_name);
+    if !staged_path.exists() {
+        if let Err(err) = fs::copy(local_model_path, &staged_path) {
+            tracing::warn!(source = %local_model_path.display(), target = %staged_path.display(), error = %err, "Failed to stage local model into lit cache");
+            return None;
+        }
+    }
+
+    Some(target_name)
 }
 
 /// Return the best local model path for a provided model identifier.
@@ -262,10 +303,11 @@ pub fn find_model_path(model_name: &str) -> anyhow::Result<PathBuf> {
 /// Resolve a model identifier to the most suitable value for the lit CLI.
 pub fn resolve_model_argument(model_name: &str) -> String {
     if let Some(home) = dirs::home_dir() {
-        if let Some(path) = collect_candidate_model_paths(model_name, &home)
-            .into_iter()
-            .find(|candidate| candidate.exists())
-        {
+        let candidates = collect_candidate_model_paths(model_name, &home);
+        if let Some(path) = candidates.iter().find(|candidate| candidate.exists()) {
+            if let Some(staged_name) = stage_model_for_lit_cli(path, model_name, &home) {
+                return staged_name;
+            }
             return path.to_string_lossy().into_owned();
         }
     } else if Path::new(model_name).exists() {
@@ -297,7 +339,7 @@ impl std::fmt::Debug for NativeCompletionStream {
 
 #[cfg(test)]
 mod tests {
-    use super::find_model_path;
+    use super::{find_model_path, resolve_model_argument};
     use std::env;
     use std::fs;
     use std::path::PathBuf;
@@ -324,6 +366,35 @@ mod tests {
 
         let found_path = result.expect("expected the model to be discovered");
         assert_eq!(found_path, PathBuf::from(&model_path));
+
+        let _ = fs::remove_dir_all(&temp_home);
+    }
+
+    #[test]
+    fn resolve_model_argument_stages_local_models_into_lit_cache() {
+        let temp_home =
+            env::temp_dir().join(format!("litert-lm-test-cache-{}", std::process::id()));
+        let model_dir = temp_home.join("gits/mais");
+        fs::create_dir_all(&model_dir).unwrap();
+
+        let model_path = model_dir.join("demo-model.litertlm");
+        fs::write(&model_path, b"fake").unwrap();
+
+        let previous_home = env::var_os("HOME");
+        env::set_var("HOME", &temp_home);
+
+        let resolved = resolve_model_argument("demo-model.litertlm");
+
+        if let Some(previous_home) = previous_home {
+            env::set_var("HOME", previous_home);
+        } else {
+            env::remove_var("HOME");
+        }
+
+        assert_eq!(resolved, "demo-model.litertlm");
+        assert!(temp_home
+            .join(".cache/litert-lm/demo-model.litertlm")
+            .exists());
 
         let _ = fs::remove_dir_all(&temp_home);
     }
