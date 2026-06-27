@@ -67,6 +67,9 @@ echo "Fetching tags..."
 git fetch --tags
 echo "Checking out version $VERSION..."
 git checkout "$VERSION" || git checkout main
+echo "Pulling Git LFS objects..."
+git lfs install || true
+git lfs pull
 
 # 4. Build C shared library
 echo "[4/5] Building LiteRT-LM C Shared Library via Bazel..."
