@@ -98,12 +98,20 @@ else
     done
 fi
 
+# Parse build mode argument
+BUILD_MODE="opt"
+for arg in "$@"; do
+    if [ "$arg" = "--fast" ] || [ "$arg" = "fast" ] || [ "$arg" = "fastbuild" ]; then
+        BUILD_MODE="fastbuild"
+    fi
+done
+
 # 4. Build C shared library
-echo "[4/5] Building LiteRT-LM C Shared Library via Bazel..."
+echo "[4/5] Building LiteRT-LM C Shared Library via Bazel ($BUILD_MODE mode)..."
 echo "This might take a while (typically 15-45 minutes depending on CPU)..."
 
 # The shared-library target is defined in python/litert_lm/BUILD.
-$BAZEL_CMD build //python/litert_lm:litert-lm -c opt
+$BAZEL_CMD build //python/litert_lm:litert-lm -c "$BUILD_MODE"
 
 # 5. Copy Build Artifacts
 echo "[5/5] Deploying build artifacts..."

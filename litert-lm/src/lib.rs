@@ -129,9 +129,12 @@ fn ensure_native_library_available() -> Result<PathBuf> {
         "Native LiteRT-LM shared library is missing; building it now"
     );
 
-    let status = Command::new("bash")
-        .arg(&build_script)
-        .current_dir(&build_cwd)
+    let mut cmd = Command::new("bash");
+    cmd.arg(&build_script);
+    if std::env::var("LITERT_LM_FAST_BUILD").is_ok() {
+        cmd.arg("--fast");
+    }
+    let status = cmd.current_dir(&build_cwd)
         .status()
         .map_err(|e| anyhow::anyhow!("Failed to start native library build: {e}"))?;
 
