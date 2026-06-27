@@ -68,8 +68,35 @@ git fetch --tags
 echo "Checking out version $VERSION..."
 git checkout "$VERSION" || git checkout main
 echo "Pulling Git LFS objects..."
-git lfs install || true
-git lfs pull
+if command -v git-lfs &>/dev/null; then
+    git lfs install || true
+    git lfs pull
+else
+    echo "git-lfs not found. Downloading LFS assets manually using curl..."
+    PREBUILT_ARCH="linux_x86_64"
+    if [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then
+        PREBUILT_ARCH="linux_arm64"
+    fi
+    
+    FILES=(
+        "libGemmaModelConstraintProvider.so"
+        "libLiteRt.so"
+        "libLiteRtTopKWebGpuSampler.so"
+        "libLiteRtWebGpuAccelerator.so"
+    )
+    
+    for file in "${FILES[@]}"; do
+        LOCAL_FILE="prebuilt/${PREBUILT_ARCH}/${file}"
+        if [ -f "$LOCAL_FILE" ]; then
+            SIZE=$(stat -c%s "$LOCAL_FILE")
+            if [ "$SIZE" -lt 1000 ]; then
+                URL="https://media.githubusercontent.com/media/google-ai-edge/LiteRT-LM/${VERSION}/prebuilt/${PREBUILT_ARCH}/${file}"
+                echo "Downloading ${file} from GitHub Media CDN..."
+                curl -L -o "$LOCAL_FILE" "$URL"
+            fi
+        fi
+    done
+fi
 
 # 4. Build C shared library
 echo "[4/5] Building LiteRT-LM C Shared Library via Bazel..."
