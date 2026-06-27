@@ -66,6 +66,10 @@ async fn main() -> Result<()> {
     let binary_path = manager.ensure_binary_path().await?;
     println!("[시스템] lit 바이너리 준비 완료: {:?}", binary_path);
     
+    println!("[시스템] LiteRT-LM C++ 공유 라이브러리 확인 및 로드 시작...");
+    let _lib = litert_lm::load_native_library()?;
+    println!("[시스템] LiteRT-LM C++ 공유 라이브러리 로드 완료");
+    
     let state = AppState {
         manager: Arc::new(manager),
         system_prompt,
