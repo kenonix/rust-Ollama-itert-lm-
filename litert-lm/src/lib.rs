@@ -60,11 +60,52 @@ fn native_library_path(home: &Path) -> PathBuf {
     home.join(".cache/litert-lm/lib").join(lib_name)
 }
 
-fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
+fn find_build_script() -> Option<(PathBuf, PathBuf)> {
+    let script_name = "build_cpp_library.sh";
+
+    // 1. Try current working directory
+    if let Ok(cwd) = std::env::current_dir() {
+        let script = cwd.join(script_name);
+        if script.exists() {
+            return Some((script, cwd));
+        }
+    }
+
+    // 2. Try current executable directory
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            // Check exe_dir
+            let script = exe_dir.join(script_name);
+            if script.exists() {
+                return Some((script, exe_dir.to_path_buf()));
+            }
+            // Check exe_dir/..
+            if let Some(parent) = exe_dir.parent() {
+                let script = parent.join(script_name);
+                if script.exists() {
+                    return Some((script, parent.to_path_buf()));
+                }
+                // Check exe_dir/../..
+                if let Some(grandparent) = parent.parent() {
+                    let script = grandparent.join(script_name);
+                    if script.exists() {
+                        return Some((script, grandparent.to_path_buf()));
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. Try compile-time manifest parent
+    let manifest_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .to_path_buf()
+        .unwrap_or_else(|| Path::new("."));
+    let script = manifest_root.join(script_name);
+    if script.exists() {
+        return Some((script, manifest_root.to_path_buf()));
+    }
+
+    None
 }
 
 fn ensure_native_library_available() -> Result<PathBuf> {
@@ -75,14 +116,12 @@ fn ensure_native_library_available() -> Result<PathBuf> {
         return Ok(lib_path);
     }
 
-    let build_script = repo_root().join("build_cpp_library.sh");
-    if !build_script.exists() {
-        return Err(anyhow::anyhow!(
-            "Native LiteRT-LM shared library not found at {} and build script was not found at {}",
-            lib_path.display(),
-            build_script.display()
-        ));
-    }
+    let (build_script, build_cwd) = find_build_script().ok_or_else(|| {
+        anyhow::anyhow!(
+            "Native LiteRT-LM shared library not found at {}, and build_cpp_library.sh was not found in CWD, executable directory, or manifest parent.",
+            lib_path.display()
+        )
+    })?;
 
     tracing::info!(
         path = %lib_path.display(),
@@ -92,7 +131,7 @@ fn ensure_native_library_available() -> Result<PathBuf> {
 
     let status = Command::new("bash")
         .arg(&build_script)
-        .current_dir(repo_root())
+        .current_dir(&build_cwd)
         .status()
         .map_err(|e| anyhow::anyhow!("Failed to start native library build: {e}"))?;
 
@@ -130,13 +169,31 @@ pub fn load_native_library() -> Result<ffi::LibLiteRtLm> {
     }
 
     unsafe {
-        ffi::LibLiteRtLm::load(&lib_path).map_err(|e| {
-            anyhow::anyhow!(
-                "Failed to load native library from {}: {}",
-                lib_path.display(),
-                e
-            )
-        })
+        match ffi::LibLiteRtLm::load(&lib_path) {
+            Ok(lib) => Ok(lib),
+            Err(e) => {
+                // If it exists but failed to load, it might be compiled for a different architecture
+                // or corrupted. Delete it and attempt to rebuild once.
+                tracing::warn!(
+                    path = %lib_path.display(),
+                    error = %e,
+                    "Failed to load existing shared library. Attempting to delete and rebuild..."
+                );
+                
+                let _ = std::fs::remove_file(&lib_path);
+                
+                // Try ensuring library availability again (which will force a rebuild now that it doesn't exist)
+                let lib_path = ensure_native_library_available()?;
+                
+                ffi::LibLiteRtLm::load(&lib_path).map_err(|err| {
+                    anyhow::anyhow!(
+                        "Failed to load native library after rebuild from {}: {}",
+                        lib_path.display(),
+                        err
+                    )
+                })
+            }
+        }
     }
 }
 

@@ -103,7 +103,15 @@ pub async fn run_agentic_loop(
     let tools_str = if let Some(ref req_t) = request_tools {
         req_t.to_string()
     } else {
-        load_merged_tools()
+        let loaded = load_merged_tools();
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&loaded) {
+            if let Some(arr) = val.as_array() {
+                if !arr.is_empty() {
+                    println!("  - 로드된 도구 개수: {}개", arr.len());
+                }
+            }
+        }
+        loaded
     };
     let tools_opt = if tools_str == "[]" || tools_str.is_empty() { None } else { Some(tools_str) };
     
@@ -124,7 +132,7 @@ pub async fn run_agentic_loop(
     let mut stream = match manager.run_completion_stream(&model_name, &formatted_prompt).await {
         Ok(s) => s,
         Err(e) => {
-            let _ = event_tx.send(ServerStreamEvent::Error(e.to_string()));
+            let _ = event_tx.send(ServerStreamEvent::Error(format!("{:#}", e)));
             return;
         }
     };
@@ -138,7 +146,7 @@ pub async fn run_agentic_loop(
                 let _ = event_tx.send(ServerStreamEvent::Chunk(c));
             }
             Err(e) => {
-                let _ = event_tx.send(ServerStreamEvent::Error(e.to_string()));
+                let _ = event_tx.send(ServerStreamEvent::Error(format!("{:#}", e)));
                 return;
             }
         }
