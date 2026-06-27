@@ -110,6 +110,18 @@ fi
 if [ -f "$SO_FILE" ]; then
     cp -v "$SO_FILE" "$LIB_DIR/"
     cp -v "c/engine.h" "$INCLUDE_DIR/"
+    
+    # Also copy libGemmaModelConstraintProvider.so
+    PREBUILT_ARCH="linux_x86_64"
+    if [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then
+        PREBUILT_ARCH="linux_arm64"
+    fi
+    GEMMA_SO="prebuilt/${PREBUILT_ARCH}/libGemmaModelConstraintProvider.so"
+    if [ -f "$GEMMA_SO" ]; then
+        cp -v "$GEMMA_SO" "$LIB_DIR/"
+        echo "Copied $GEMMA_SO to $LIB_DIR/"
+    fi
+
     echo "Success! Shared library is copied to: $LIB_DIR/$(basename "$SO_FILE")"
     echo "Header file is copied to: $INCLUDE_DIR/engine.h"
     echo ""
