@@ -67,6 +67,9 @@ echo "Fetching tags..."
 git fetch --tags
 echo "Checking out version $VERSION..."
 git checkout "$VERSION" || git checkout main
+echo "Pulling Git LFS objects..."
+git lfs install || true
+git lfs pull
 
 # 4. Build C shared library
 echo "[4/5] Building LiteRT-LM C Shared Library via Bazel..."
@@ -105,8 +108,20 @@ if [ -z "$SO_FILE" ]; then
 fi
 
 if [ -f "$SO_FILE" ]; then
-    cp -v "$SO_FILE" "$LIB_DIR/"
-    cp -v "c/engine.h" "$INCLUDE_DIR/"
+    cp -vf "$SO_FILE" "$LIB_DIR/"
+    cp -vf "c/engine.h" "$INCLUDE_DIR/"
+    
+    # Also copy libGemmaModelConstraintProvider.so
+    PREBUILT_ARCH="linux_x86_64"
+    if [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then
+        PREBUILT_ARCH="linux_arm64"
+    fi
+    GEMMA_SO="prebuilt/${PREBUILT_ARCH}/libGemmaModelConstraintProvider.so"
+    if [ -f "$GEMMA_SO" ]; then
+        cp -vf "$GEMMA_SO" "$LIB_DIR/"
+        echo "Copied $GEMMA_SO to $LIB_DIR/"
+    fi
+
     echo "Success! Shared library is copied to: $LIB_DIR/$(basename "$SO_FILE")"
     echo "Header file is copied to: $INCLUDE_DIR/engine.h"
     echo ""
